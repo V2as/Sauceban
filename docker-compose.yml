@@ -1,0 +1,11 @@
+services:
+  marzban:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    env_file: .env
+    network_mode: host
+    volumes:
+      - /var/lib/marzban:/var/lib/marzban
+      - /var/lib/marzban/logs:/var/lib/marzban-node
