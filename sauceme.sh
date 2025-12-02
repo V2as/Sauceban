@@ -705,6 +705,7 @@ services:
     restart: always
     env_file: .env
     network_mode: host
+    ipc: host
     volumes:
       - /var/lib/marzban:/var/lib/marzban
       - /var/lib/marzban/logs:/var/lib/marzban-node
@@ -810,6 +811,7 @@ services:
     restart: always
     env_file: .env
     network_mode: host
+    ipc: host
     volumes:
       - /var/lib/marzban:/var/lib/marzban
       - /var/lib/marzban/logs:/var/lib/marzban-node
