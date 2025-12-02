@@ -45,6 +45,15 @@ $KEY_DOMAIN {
         }
     }
 
+    reverse_proxy unix//dev/shm/xhttp.socket {
+        flush_interval -1
+
+        transport http {
+            versions h2c
+            read_buffer 8192
+        }
+    }
+
     header {
         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
         X-Frame-Options "DENY"
