@@ -64,7 +64,7 @@ $KEY_DOMAIN {
 }
 
 $DASH_DOMAIN {
-	reverse_proxy 120.0.0.1:8000 {
+	reverse_proxy 127.0.0.1:8000 {
 		header_up X-Real-IP {remote_host}
 		header_up X-Forwarded-For {remote_host}
 		header_up X-Forwarded-Proto {scheme}
