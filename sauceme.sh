@@ -124,7 +124,7 @@ detect_compose() {
 
 install_marzban_script() {
     FETCH_REPO="V2as/Sauceban"
-    SCRIPT_URL="https://github.com/$FETCH_REPO/raw/sauce/sauceme.sh"
+    SCRIPT_URL="https://github.com/$FETCH_REPO/raw/master/sauceme.sh"
     colorized_echo blue "Installing sauceme script"
     curl -sSL $SCRIPT_URL | install -m 755 /dev/stdin /usr/local/bin/marzban
     colorized_echo green "sauceme script installed successfully"
@@ -684,12 +684,12 @@ install_marzban() {
     local marzban_version=$1
     local database_type=$2
     # Fetch releases
-    FILES_URL_PREFIX="https://raw.githubusercontent.com/V2as/Sauceban/sauce"
+    FILES_URL_PREFIX="https://raw.githubusercontent.com/V2as/Sauceban/master"
 
     mkdir -p "$DATA_DIR"
     mkdir -p "$APP_DIR"
 
-    git clone -b sauce https://github.com/V2as/Sauceban.git "$APP_DIR"
+    git clone -b master https://github.com/V2as/Sauceban.git "$APP_DIR"
 
     colorized_echo blue "Setting up docker-compose.yml"
     docker_file_path="$APP_DIR/docker-compose.yml"
@@ -1482,7 +1482,7 @@ update_command() {
 
 update_marzban_script() {
     FETCH_REPO="V2as/Sauceban"
-    SCRIPT_URL="https://github.com/$FETCH_REPO/raw/sauce/sauceme.sh"
+    SCRIPT_URL="https://github.com/$FETCH_REPO/raw/master/sauceme.sh"
     colorized_echo blue "Updating marzban script"
     curl -sSL $SCRIPT_URL | install -m 755 /dev/stdin /usr/local/bin/marzban
     colorized_echo green "marzban script updated successfully"
@@ -1491,7 +1491,7 @@ update_marzban_script() {
 update_marzban() {
     rm -r /tmp/sauceban/
     # Клонируем во временную директорию
-    git clone -b sauce https://github.com/V2as/Sauceban.git /tmp/sauceban
+    git clone -b master https://github.com/V2as/Sauceban.git /tmp/sauceban
     # Копируем нужные файлы поверх существующих
     rsync -av --exclude='docker-compose.yml' /tmp/sauceban/ "$APP_DIR"/
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull
