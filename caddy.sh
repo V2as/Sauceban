@@ -91,6 +91,8 @@ volumes:
   caddy_config:
 EOF
 
-docker compose -f /opt/caddy/docker-compose.yml up -d && docker compose -f /opt/caddy/docker-compose.yml logs -f --tail=100
+echo "XRAY_SUBSCRIPTION_URL_PREFIX=\"https://$DASH_DOMAIN\"" >> /opt/marzban/.env
+
+docker compose -f /opt/caddy/docker-compose.yml up -d && docker compose -f /opt/caddy/docker-compose.yml logs --tail=100
 
 

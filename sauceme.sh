@@ -755,7 +755,7 @@ EOF
 
         # Generate docker-compose
         colorized_echo green "File generated at $APP_DIR/docker-compose.yml"
-
+        echo ""
         # Modify .env file
         colorized_echo blue "Fetching .env file"
         curl -sL "$FILES_URL_PREFIX/.env.example" -o "$APP_DIR/.env"
