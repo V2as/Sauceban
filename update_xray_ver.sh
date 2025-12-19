@@ -1,28 +1,27 @@
 #!/bin/bash
+
 echo 'Xray Core Update'
-sleep 2s
-
 echo -e "\e[1m\e[33mСкрипт обновления Xray в Marzban Main\n\e[0m"
-sleep 1
 
-# Проверка ОС
 if [[ $(uname) != "Linux" ]]; then
     echo "Этот скрипт предназначен только для Linux"
     exit 1
 fi
 
-# Проверка архитектуры
 if [[ $(uname -m) != "x86_64" ]]; then
     echo "Этот скрипт предназначен только для архитектуры x64"
     exit 1
 fi
 
-# Функция загрузки Xray-core
 get_xray_core() {
-    read -p "Введите версию Xray (например, v1.5.0): " selected_version
+    selected_version="$1"
 
     if [[ -z "$selected_version" ]]; then
-        echo "Вы не ввели версию. Завершаю выполнение."
+        read -p "Введите версию Xray (например, v1.5.0): " selected_version
+    fi
+
+    if [[ -z "$selected_version" ]]; then
+        echo "Версия не указана. Завершаю выполнение."
         exit 1
     fi
 
@@ -44,7 +43,7 @@ get_xray_core() {
     wget -q "${xray_download_url}"
 
     if [[ $? -ne 0 ]]; then
-        echo "Ошибка при скачивании Xray-core версии ${selected_version}. Проверьте введённую версию."
+        echo "Ошибка при скачивании Xray-core версии ${selected_version}. Проверьте версию."
         exit 1
     fi
 
@@ -53,15 +52,15 @@ get_xray_core() {
     rm -f "${xray_filename}"
 }
 
-# Обновление Marzban Main
 update_marzban_main() {
-    get_xray_core
+    get_xray_core "$1"
+
     marzban_folder="/opt/marzban"
     marzban_env_file="${marzban_folder}/.env"
     xray_executable_path='XRAY_EXECUTABLE_PATH="/var/lib/marzban/xray-core/xray"'
 
     echo "Изменение ядра Marzban..."
-    if ! grep -q "^${xray_executable_path}" "$marzban_env_file"; then
+    if ! grep -q "^XRAY_EXECUTABLE_PATH=" "$marzban_env_file"; then
         echo "${xray_executable_path}" >> "${marzban_env_file}"
     fi
 
@@ -71,5 +70,4 @@ update_marzban_main() {
     echo "Установка завершена."
 }
 
-# Автоматически выбираем "1 — Marzban Main"
-update_marzban_main
+update_marzban_main "$1"
