@@ -108,6 +108,39 @@ install_docker() {
     colorized_echo blue "Installing Docker"
     curl -fsSL https://get.docker.com | sh
     colorized_echo green "Docker installed successfully"
+
+    # Путь к конфигурационному файлу
+    CONFIG_FILE="/etc/docker/daemon.json"
+
+    echo "Начинаю настройку registry-mirrors..."
+
+    # 1. Проверяем, существует ли директория /etc/docker
+    if [ ! -d "/etc/docker" ]; then
+        sudo mkdir -p /etc/docker
+    fi
+
+    # 2. Записываем конфигурацию в файл
+    # Используем jq, если нужно аккуратно вставить в существующий JSON,
+    # но для простоты перезапишем файл новым конфигом:
+    echo '{
+        "registry-mirrors": ["https://mirror.gcr.io"]
+    }' | sudo tee $CONFIG_FILE > /dev/null
+
+    echo "Конфигурация обновлена в $CONFIG_FILE"
+
+    # 3. Перезапускаем демон Docker
+    echo "Перезапуск Docker..."
+    sudo systemctl restart docker
+
+    # 4. Запускаем Docker Compose
+    if [ -f "docker-compose.yml" ] || [ -f "docker-compose.yaml" ]; then
+        echo "Запуск Docker Compose..."
+        sudo docker compose up -d
+    else
+        echo "Файл docker-compose.yml не найден в текущей директории. Пропускаю шаг 4."
+    fi
+
+    echo "Готово!"
 }
 
 detect_compose() {
