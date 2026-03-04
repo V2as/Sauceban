@@ -1569,54 +1569,7 @@ update_marzban() {
     fi
 }
 
-migrate_marzban() {
-    check_running_as_root
-
-    if ! is_marzban_installed; then
-        colorized_echo red "Marzban's not installed!"
-        exit 1
-    fi
-
-    detect_compose
-
-    if ! grep -q "image:.*gozargah/marzban" "$COMPOSE_FILE"; then
-        colorized_echo yellow "This installation doesn't use the official Marzban Docker image."
-        colorized_echo yellow "It may already be migrated to a custom build."
-        read -p "Continue anyway? (y/n) "
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            colorized_echo red "Aborted"
-            exit 1
-        fi
-    fi
-
-    colorized_echo blue "====================================="
-    colorized_echo blue "  Migrating Marzban to custom build  "
-    colorized_echo blue "====================================="
-
-    if ! command -v rsync >/dev/null 2>&1; then
-        detect_os
-        install_package rsync
-    fi
-    if ! command -v yq >/dev/null 2>&1; then
-        install_yq
-    fi
-
-    colorized_echo blue "Fetching Sauceban repository..."
-    rm -rf /tmp/sauceban
-    git clone -b master https://github.com/V2as/Sauceban.git /tmp/sauceban
-
-    colorized_echo blue "Copying source files (preserving docker-compose.yml and .env)..."
-    rsync -av --exclude='docker-compose.yml' --exclude='.env' --exclude='.git' /tmp/sauceban/ "$APP_DIR"/
-    rm -rf /tmp/sauceban
-
-    colorized_echo blue "Updating docker-compose.yml..."
-    yq -i 'del(.services.marzban.image)' "$COMPOSE_FILE"
-    yq -i '.services.marzban.build.context = "."' "$COMPOSE_FILE"
-    yq -i '.services.marzban.build.dockerfile = "Dockerfile"' "$COMPOSE_FILE"
-    yq -i '.services.marzban.ipc = "host"' "$COMPOSE_FILE"
-    colorized_echo green "docker-compose.yml updated"
-
-    colorized_echo blue "Ensuring Docker DNS is configured..."
+ensure_docker_dns() {
     local DOCKER_DAEMON_JSON="/etc/docker/daemon.json"
     if [ -f "$DOCKER_DAEMON_JSON" ]; then
         if ! grep -q '"dns"' "$DOCKER_DAEMON_JSON"; then
@@ -1630,19 +1583,143 @@ migrate_marzban() {
             colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
         fi
     else
-        echo '{
-    "dns": ["8.8.8.8", "1.1.1.1"]
-}' > "$DOCKER_DAEMON_JSON"
+        echo '{"dns": ["8.8.8.8", "1.1.1.1"]}' > "$DOCKER_DAEMON_JSON"
         systemctl restart docker
         colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
+    fi
+}
+
+migrate_help() {
+    colorized_echo cyan "Usage: marzban migrate [options]"
+    echo ""
+    colorized_echo cyan "Switch Marzban to a different source (image or build from repo)."
+    colorized_echo cyan "Database and all data are preserved."
+    echo ""
+    colorized_echo yellow "Options:"
+    echo "  --image <image:tag>       Use a pre-built Docker Hub image"
+    echo "                            Examples:"
+    echo "                              --image v2as/sauceban:latest"
+    echo "                              --image gozargah/marzban:latest"
+    echo "                              --image gozargah/marzban:v0.5.2"
+    echo ""
+    echo "  --build <sauceban|gozargah>  Clone repo and build from source"
+    echo "                            sauceban  = github.com/V2as/Sauceban"
+    echo "                            gozargah  = github.com/Gozargah/Marzban"
+    echo ""
+    echo "  --branch <name>           Branch to clone (default: master)"
+    echo "  -y, --yes                 Skip confirmation prompt"
+    echo "  -h, --help                Show this help"
+    echo ""
+    colorized_echo cyan "Examples:"
+    echo "  marzban migrate --image v2as/sauceban:latest"
+    echo "  marzban migrate --image gozargah/marzban:v0.5.2"
+    echo "  marzban migrate --build sauceban"
+    echo "  marzban migrate --build gozargah --branch dev"
+    echo "  marzban migrate --image v2as/sauceban:latest -y"
+}
+
+migrate_marzban() {
+    check_running_as_root
+
+    local mode=""
+    local image_name=""
+    local build_repo=""
+    local branch="master"
+    local force=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --image)
+                mode="image"
+                image_name="$2"
+                shift 2
+                ;;
+            --build)
+                mode="build"
+                build_repo="$2"
+                shift 2
+                ;;
+            --branch)
+                branch="$2"
+                shift 2
+                ;;
+            -y|--yes)
+                force=true
+                shift
+                ;;
+            -h|--help)
+                migrate_help
+                return 0
+                ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                migrate_help
+                exit 1
+                ;;
+        esac
+    done
+
+    if [[ -z "$mode" ]]; then
+        colorized_echo red "Error: specify --image <image:tag> or --build <sauceban|gozargah>"
+        echo ""
+        migrate_help
+        exit 1
+    fi
+
+    if [[ "$mode" == "image" && -z "$image_name" ]]; then
+        colorized_echo red "Error: --image requires image name (e.g. v2as/sauceban:latest)"
+        exit 1
+    fi
+
+    if [[ "$mode" == "build" && "$build_repo" != "sauceban" && "$build_repo" != "gozargah" ]]; then
+        colorized_echo red "Error: --build accepts 'sauceban' or 'gozargah'"
+        exit 1
+    fi
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban's not installed!"
+        exit 1
+    fi
+
+    detect_os
+    detect_compose
+
+    if [[ "$mode" == "image" ]]; then
+        colorized_echo blue "Migrating to image: $image_name"
+    else
+        colorized_echo blue "Migrating to build from: $build_repo (branch: $branch)"
+    fi
+
+    if [[ "$force" != true ]]; then
+        read -p "Continue? (y/n) "
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            colorized_echo red "Aborted"
+            exit 1
+        fi
+    fi
+
+    if ! command -v yq >/dev/null 2>&1; then
+        install_yq
+    fi
+
+    if [[ "$mode" == "image" ]]; then
+        migrate_to_image "$image_name"
+    else
+        migrate_to_build "$build_repo" "$branch"
     fi
 
     colorized_echo blue "Stopping Marzban container (database stays running)..."
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" stop marzban
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" rm -f marzban
 
-    colorized_echo blue "Building custom Marzban image..."
-    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" build marzban
+    if [[ "$mode" == "image" ]]; then
+        colorized_echo blue "Pulling $image_name..."
+        $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull marzban
+    else
+        ensure_docker_dns
+        colorized_echo blue "Building image from source..."
+        $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" build marzban
+    fi
 
     colorized_echo blue "Starting Marzban..."
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" up -d --remove-orphans
@@ -1651,63 +1728,64 @@ migrate_marzban() {
     colorized_echo green "  Migration completed successfully!  "
     colorized_echo green "====================================="
     colorized_echo cyan "Database and all data were preserved."
-    colorized_echo cyan "Marzban is now running from a custom build."
+    if [[ "$mode" == "image" ]]; then
+        colorized_echo cyan "Marzban is now running from image: $image_name"
+    else
+        colorized_echo cyan "Marzban is now running from $build_repo build (branch: $branch)"
+    fi
 }
 
-rollback_marzban() {
-    check_running_as_root
-
-    if ! is_marzban_installed; then
-        colorized_echo red "Marzban's not installed!"
-        exit 1
-    fi
-
-    detect_compose
-
-    if grep -q "image:.*gozargah/marzban" "$COMPOSE_FILE"; then
-        colorized_echo yellow "This installation already uses the official Marzban Docker image."
-        read -p "Continue anyway? (y/n) "
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            colorized_echo red "Aborted"
-            exit 1
-        fi
-    fi
-
-    local marzban_tag="latest"
-    read -p "Enter Marzban image tag (default: latest): " user_tag
-    if [[ -n "$user_tag" ]]; then
-        marzban_tag="$user_tag"
-    fi
-
-    colorized_echo blue "========================================="
-    colorized_echo blue "  Rolling back to official Marzban image  "
-    colorized_echo blue "========================================="
-
-    if ! command -v yq >/dev/null 2>&1; then
-        install_yq
-    fi
+migrate_to_image() {
+    local image_name="$1"
 
     colorized_echo blue "Updating docker-compose.yml..."
     yq -i 'del(.services.marzban.build)' "$COMPOSE_FILE"
     yq -i 'del(.services.marzban.ipc)' "$COMPOSE_FILE"
-    yq -i ".services.marzban.image = \"gozargah/marzban:${marzban_tag}\"" "$COMPOSE_FILE"
-    colorized_echo green "docker-compose.yml updated"
+    yq -i ".services.marzban.image = \"${image_name}\"" "$COMPOSE_FILE"
+    colorized_echo green "docker-compose.yml updated (image: $image_name)"
+}
 
-    colorized_echo blue "Stopping Marzban container (database stays running)..."
-    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" stop marzban
-    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" rm -f marzban
+migrate_to_build() {
+    local repo="$1"
+    local branch="$2"
+    local repo_url=""
+    local tmp_dir="/tmp/sauceban_migrate"
 
-    colorized_echo blue "Pulling gozargah/marzban:${marzban_tag}..."
-    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull marzban
+    if [[ "$repo" == "sauceban" ]]; then
+        repo_url="https://github.com/V2as/Sauceban.git"
+    else
+        repo_url="https://github.com/Gozargah/Marzban.git"
+    fi
 
-    colorized_echo blue "Starting Marzban..."
-    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" up -d --remove-orphans
+    if ! command -v git >/dev/null 2>&1; then
+        install_package git
+    fi
+    if ! command -v rsync >/dev/null 2>&1; then
+        install_package rsync
+    fi
 
-    colorized_echo green "========================================="
-    colorized_echo green "  Rollback completed successfully!       "
-    colorized_echo green "========================================="
-    colorized_echo cyan "Database and all data were preserved."
-    colorized_echo cyan "Marzban is now running from gozargah/marzban:${marzban_tag}"
+    colorized_echo blue "Cloning $repo_url (branch: $branch)..."
+    rm -rf "$tmp_dir"
+    if ! git clone -b "$branch" "$repo_url" "$tmp_dir"; then
+        colorized_echo red "Failed to clone repository"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    colorized_echo blue "Copying source files (preserving docker-compose.yml and .env)..."
+    rsync -av \
+        --exclude='docker-compose.yml' \
+        --exclude='.env' \
+        --exclude='.git' \
+        "$tmp_dir/" "$APP_DIR"/
+    rm -rf "$tmp_dir"
+
+    colorized_echo blue "Updating docker-compose.yml..."
+    yq -i 'del(.services.marzban.image)' "$COMPOSE_FILE"
+    yq -i '.services.marzban.build.context = "."' "$COMPOSE_FILE"
+    yq -i '.services.marzban.build.dockerfile = "Dockerfile"' "$COMPOSE_FILE"
+    yq -i '.services.marzban.ipc = "host"' "$COMPOSE_FILE"
+    colorized_echo green "docker-compose.yml updated (build from source)"
 }
 
 check_editor() {
@@ -1770,8 +1848,7 @@ usage() {
     colorized_echo yellow "  backup          $(tput sgr0)– Manual backup launch"
     colorized_echo yellow "  backup-service  $(tput sgr0)– Marzban Backupservice to backup to TG, and a new job in crontab"
     colorized_echo yellow "  core-update     $(tput sgr0)– Update/Change Xray core"
-    colorized_echo yellow "  migrate         $(tput sgr0)– Migrate from official image to custom build"
-    colorized_echo yellow "  rollback        $(tput sgr0)– Rollback to official Marzban Docker image"
+    colorized_echo yellow "  migrate         $(tput sgr0)– Switch Marzban source (image or build)"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -1841,8 +1918,6 @@ case "$1" in
         shift; update_core_command "$@";;
     migrate)
         shift; migrate_marzban "$@";;
-    rollback)
-        shift; rollback_marzban "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
