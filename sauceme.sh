@@ -1532,6 +1532,70 @@ update_marzban() {
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull
 }
 
+migrate_marzban() {
+    check_running_as_root
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban's not installed!"
+        exit 1
+    fi
+
+    detect_compose
+
+    if ! grep -q "image:.*gozargah/marzban" "$COMPOSE_FILE"; then
+        colorized_echo yellow "This installation doesn't use the official Marzban Docker image."
+        colorized_echo yellow "It may already be migrated to a custom build."
+        read -p "Continue anyway? (y/n) "
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            colorized_echo red "Aborted"
+            exit 1
+        fi
+    fi
+
+    colorized_echo blue "====================================="
+    colorized_echo blue "  Migrating Marzban to custom build  "
+    colorized_echo blue "====================================="
+
+    if ! command -v rsync >/dev/null 2>&1; then
+        detect_os
+        install_package rsync
+    fi
+    if ! command -v yq >/dev/null 2>&1; then
+        install_yq
+    fi
+
+    colorized_echo blue "Fetching Sauceban repository..."
+    rm -rf /tmp/sauceban
+    git clone -b master https://github.com/V2as/Sauceban.git /tmp/sauceban
+
+    colorized_echo blue "Copying source files (preserving docker-compose.yml and .env)..."
+    rsync -av --exclude='docker-compose.yml' --exclude='.env' --exclude='.git' /tmp/sauceban/ "$APP_DIR"/
+    rm -rf /tmp/sauceban
+
+    colorized_echo blue "Updating docker-compose.yml..."
+    yq -i 'del(.services.marzban.image)' "$COMPOSE_FILE"
+    yq -i '.services.marzban.build.context = "."' "$COMPOSE_FILE"
+    yq -i '.services.marzban.build.dockerfile = "Dockerfile"' "$COMPOSE_FILE"
+    yq -i '.services.marzban.ipc = "host"' "$COMPOSE_FILE"
+    colorized_echo green "docker-compose.yml updated"
+
+    colorized_echo blue "Stopping Marzban container (database stays running)..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" stop marzban
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" rm -f marzban
+
+    colorized_echo blue "Building custom Marzban image..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" build marzban
+
+    colorized_echo blue "Starting Marzban..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" up -d --remove-orphans
+
+    colorized_echo green "====================================="
+    colorized_echo green "  Migration completed successfully!  "
+    colorized_echo green "====================================="
+    colorized_echo cyan "Database and all data were preserved."
+    colorized_echo cyan "Marzban is now running from a custom build."
+}
+
 check_editor() {
     if [ -z "$EDITOR" ]; then
         if command -v nano >/dev/null 2>&1; then
@@ -1592,6 +1656,7 @@ usage() {
     colorized_echo yellow "  backup          $(tput sgr0)– Manual backup launch"
     colorized_echo yellow "  backup-service  $(tput sgr0)– Marzban Backupservice to backup to TG, and a new job in crontab"
     colorized_echo yellow "  core-update     $(tput sgr0)– Update/Change Xray core"
+    colorized_echo yellow "  migrate         $(tput sgr0)– Migrate from official image to custom build"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -1659,6 +1724,8 @@ case "$1" in
         shift; install_marzban_script "$@";;
     core-update)
         shift; update_core_command "$@";;
+    migrate)
+        shift; migrate_marzban "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
