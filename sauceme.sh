@@ -123,7 +123,8 @@ install_docker() {
     # Используем jq, если нужно аккуратно вставить в существующий JSON,
     # но для простоты перезапишем файл новым конфигом:
     echo '{
-        "registry-mirrors": ["https://mirror.gcr.io"]
+        "registry-mirrors": ["https://mirror.gcr.io"],
+        "dns": ["8.8.8.8", "1.1.1.1"]
     }' | sudo tee $CONFIG_FILE > /dev/null
 
     echo "Конфигурация обновлена в $CONFIG_FILE"
@@ -1579,6 +1580,27 @@ migrate_marzban() {
     yq -i '.services.marzban.ipc = "host"' "$COMPOSE_FILE"
     colorized_echo green "docker-compose.yml updated"
 
+    colorized_echo blue "Ensuring Docker DNS is configured..."
+    local DOCKER_DAEMON_JSON="/etc/docker/daemon.json"
+    if [ -f "$DOCKER_DAEMON_JSON" ]; then
+        if ! grep -q '"dns"' "$DOCKER_DAEMON_JSON"; then
+            if command -v jq >/dev/null 2>&1; then
+                jq '. + {"dns": ["8.8.8.8", "1.1.1.1"]}' "$DOCKER_DAEMON_JSON" > /tmp/daemon.json.tmp \
+                    && mv /tmp/daemon.json.tmp "$DOCKER_DAEMON_JSON"
+            else
+                sed -i 's/}$/,\n    "dns": ["8.8.8.8", "1.1.1.1"]\n}/' "$DOCKER_DAEMON_JSON"
+            fi
+            systemctl restart docker
+            colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
+        fi
+    else
+        echo '{
+    "dns": ["8.8.8.8", "1.1.1.1"]
+}' > "$DOCKER_DAEMON_JSON"
+        systemctl restart docker
+        colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
+    fi
+
     colorized_echo blue "Stopping Marzban container (database stays running)..."
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" stop marzban
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" rm -f marzban
@@ -1594,6 +1616,62 @@ migrate_marzban() {
     colorized_echo green "====================================="
     colorized_echo cyan "Database and all data were preserved."
     colorized_echo cyan "Marzban is now running from a custom build."
+}
+
+rollback_marzban() {
+    check_running_as_root
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban's not installed!"
+        exit 1
+    fi
+
+    detect_compose
+
+    if grep -q "image:.*gozargah/marzban" "$COMPOSE_FILE"; then
+        colorized_echo yellow "This installation already uses the official Marzban Docker image."
+        read -p "Continue anyway? (y/n) "
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            colorized_echo red "Aborted"
+            exit 1
+        fi
+    fi
+
+    local marzban_tag="latest"
+    read -p "Enter Marzban image tag (default: latest): " user_tag
+    if [[ -n "$user_tag" ]]; then
+        marzban_tag="$user_tag"
+    fi
+
+    colorized_echo blue "========================================="
+    colorized_echo blue "  Rolling back to official Marzban image  "
+    colorized_echo blue "========================================="
+
+    if ! command -v yq >/dev/null 2>&1; then
+        install_yq
+    fi
+
+    colorized_echo blue "Updating docker-compose.yml..."
+    yq -i 'del(.services.marzban.build)' "$COMPOSE_FILE"
+    yq -i 'del(.services.marzban.ipc)' "$COMPOSE_FILE"
+    yq -i ".services.marzban.image = \"gozargah/marzban:${marzban_tag}\"" "$COMPOSE_FILE"
+    colorized_echo green "docker-compose.yml updated"
+
+    colorized_echo blue "Stopping Marzban container (database stays running)..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" stop marzban
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" rm -f marzban
+
+    colorized_echo blue "Pulling gozargah/marzban:${marzban_tag}..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull marzban
+
+    colorized_echo blue "Starting Marzban..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" up -d --remove-orphans
+
+    colorized_echo green "========================================="
+    colorized_echo green "  Rollback completed successfully!       "
+    colorized_echo green "========================================="
+    colorized_echo cyan "Database and all data were preserved."
+    colorized_echo cyan "Marzban is now running from gozargah/marzban:${marzban_tag}"
 }
 
 check_editor() {
@@ -1657,6 +1735,7 @@ usage() {
     colorized_echo yellow "  backup-service  $(tput sgr0)– Marzban Backupservice to backup to TG, and a new job in crontab"
     colorized_echo yellow "  core-update     $(tput sgr0)– Update/Change Xray core"
     colorized_echo yellow "  migrate         $(tput sgr0)– Migrate from official image to custom build"
+    colorized_echo yellow "  rollback        $(tput sgr0)– Rollback to official Marzban Docker image"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -1726,6 +1805,8 @@ case "$1" in
         shift; update_core_command "$@";;
     migrate)
         shift; migrate_marzban "$@";;
+    rollback)
+        shift; rollback_marzban "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
