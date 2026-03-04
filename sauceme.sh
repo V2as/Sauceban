@@ -729,17 +729,13 @@ install_marzban() {
     docker_file_path="$APP_DIR/docker-compose.yml"
 
     if [ "$database_type" == "mariadb" ]; then
-        # Generate docker-compose.yml with MariaDB content
         cat > "$docker_file_path" <<EOF
 services:
   marzban:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: v2as/sauceban:latest
     restart: always
     env_file: .env
     network_mode: host
-    ipc: host
     volumes:
       - /var/lib/marzban:/var/lib/marzban
       - /var/lib/marzban/logs:/var/lib/marzban-node
@@ -835,17 +831,13 @@ EOF
         colorized_echo green "File saved in $APP_DIR/.env"
 
     elif [ "$database_type" == "mysql" ]; then
-        # Generate docker-compose.yml with MySQL content
         cat > "$docker_file_path" <<EOF
 services:
   marzban:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: v2as/sauceban:latest
     restart: always
     env_file: .env
     network_mode: host
-    ipc: host
     volumes:
       - /var/lib/marzban:/var/lib/marzban
       - /var/lib/marzban/logs:/var/lib/marzban-node
@@ -894,7 +886,6 @@ EOF
         colorized_echo red "Using MySQL as database"
         echo "----------------------------"
         colorized_echo green "File generated at $APP_DIR/docker-compose.yml"
-        curl -sL "$FILES_URL_PREFIX/Dockerfile" -o "$APP_DIR/Dockerfile"
 
         # Modify .env file
         colorized_echo blue "Fetching .env file"
@@ -938,11 +929,10 @@ EOF
 
         curl -sL "$FILES_URL_PREFIX/docker-compose.yml" -o "$docker_file_path"
 
-        # Install requested version
         if [ "$marzban_version" == "latest" ]; then
-            yq -i '.services.marzban.image = "gozargah/marzban:latest"' "$docker_file_path"
+            yq -i '.services.marzban.image = "v2as/sauceban:latest"' "$docker_file_path"
         else
-            yq -i ".services.marzban.image = \"gozargah/marzban:${marzban_version}\"" "$docker_file_path"
+            yq -i ".services.marzban.image = \"v2as/sauceban:${marzban_version}\"" "$docker_file_path"
         fi
         echo "Installing $marzban_version version"
         colorized_echo green "File saved in $APP_DIR/docker-compose.yml"
@@ -1515,6 +1505,9 @@ update_command() {
     if ! command -v curl >/dev/null 2>&1; then
         install_package curl
     fi
+    if ! command -v yq >/dev/null 2>&1; then
+        install_yq
+    fi
 
     update_marzban_script
     colorized_echo blue "Updating Marzban..."
@@ -1544,28 +1537,59 @@ update_marzban_script() {
 }
 
 update_marzban() {
-    local tmp_dir="/tmp/sauceban"
-    rm -rf "$tmp_dir"
+    local current_image
+    current_image=$(yq '.services.marzban.image // ""' "$COMPOSE_FILE")
+    local has_build
+    has_build=$(yq '.services.marzban.build // ""' "$COMPOSE_FILE")
 
-    if ! git clone -b master https://github.com/V2as/Sauceban.git "$tmp_dir"; then
-        colorized_echo red "Failed to clone Sauceban repository"
-        rm -rf "$tmp_dir"
-        exit 1
-    fi
-
-    rsync -av \
-        --exclude='docker-compose.yml' \
-        --exclude='.env' \
-        --exclude='.git' \
-        "$tmp_dir/" "$APP_DIR"/
-    rm -rf "$tmp_dir"
-
-    if grep -q "image:.*gozargah/marzban" "$COMPOSE_FILE"; then
+    if [[ -n "$current_image" && "$current_image" != "null" ]]; then
+        colorized_echo blue "Current mode: image ($current_image)"
         colorized_echo blue "Pulling latest image..."
         $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull marzban
-    elif grep -q "build:" "$COMPOSE_FILE"; then
-        colorized_echo blue "Rebuilding custom image..."
+
+    elif [[ -n "$has_build" && "$has_build" != "null" ]]; then
+        local build_source="sauceban"
+        if [ -f "$APP_DIR/.build_source" ]; then
+            build_source=$(cat "$APP_DIR/.build_source")
+        fi
+
+        local repo_url=""
+        if [[ "$build_source" == "gozargah" ]]; then
+            repo_url="https://github.com/Gozargah/Marzban.git"
+        else
+            repo_url="https://github.com/V2as/Sauceban.git"
+        fi
+
+        local branch="master"
+        if [ -f "$APP_DIR/.build_branch" ]; then
+            branch=$(cat "$APP_DIR/.build_branch")
+        fi
+
+        colorized_echo blue "Current mode: build from $build_source (branch: $branch)"
+
+        local tmp_dir="/tmp/sauceban_update"
+        rm -rf "$tmp_dir"
+        if ! git clone -b "$branch" "$repo_url" "$tmp_dir"; then
+            colorized_echo red "Failed to clone $repo_url"
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+
+        rsync -av \
+            --exclude='docker-compose.yml' \
+            --exclude='.env' \
+            --exclude='.git' \
+            --exclude='.build_source' \
+            --exclude='.build_branch' \
+            "$tmp_dir/" "$APP_DIR"/
+        rm -rf "$tmp_dir"
+
+        ensure_docker_dns
+        colorized_echo blue "Rebuilding image..."
         $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" build marzban
+    else
+        colorized_echo red "Cannot detect installation type from docker-compose.yml"
+        exit 1
     fi
 }
 
@@ -1742,6 +1766,7 @@ migrate_to_image() {
     yq -i 'del(.services.marzban.build)' "$COMPOSE_FILE"
     yq -i 'del(.services.marzban.ipc)' "$COMPOSE_FILE"
     yq -i ".services.marzban.image = \"${image_name}\"" "$COMPOSE_FILE"
+    rm -f "$APP_DIR/.build_source" "$APP_DIR/.build_branch"
     colorized_echo green "docker-compose.yml updated (image: $image_name)"
 }
 
@@ -1785,6 +1810,8 @@ migrate_to_build() {
     yq -i '.services.marzban.build.context = "."' "$COMPOSE_FILE"
     yq -i '.services.marzban.build.dockerfile = "Dockerfile"' "$COMPOSE_FILE"
     yq -i '.services.marzban.ipc = "host"' "$COMPOSE_FILE"
+    echo "$repo" > "$APP_DIR/.build_source"
+    echo "$branch" > "$APP_DIR/.build_branch"
     colorized_echo green "docker-compose.yml updated (build from source)"
 }
 
@@ -1849,6 +1876,7 @@ usage() {
     colorized_echo yellow "  backup-service  $(tput sgr0)– Marzban Backupservice to backup to TG, and a new job in crontab"
     colorized_echo yellow "  core-update     $(tput sgr0)– Update/Change Xray core"
     colorized_echo yellow "  migrate         $(tput sgr0)– Switch Marzban source (image or build)"
+    colorized_echo yellow "  tblocker        $(tput sgr0)– Install Xray Torrent Blocker for Marzban"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -1889,6 +1917,253 @@ update_core_command() {
     colorized_echo blue "Installation of Xray-core version $selected_version completed."
 }
 
+install_tblocker_from_binary() {
+    identify_the_operating_system_and_architecture
+
+    local tb_arch=""
+    case "$ARCH" in
+        '64') tb_arch="amd64" ;;
+        'arm64-v8a') tb_arch="arm64" ;;
+        *)
+            colorized_echo red "Unsupported architecture for tblocker: $ARCH"
+            exit 1
+        ;;
+    esac
+
+    if ! command -v curl >/dev/null 2>&1; then
+        install_package curl
+    fi
+
+    local latest_release
+    latest_release=$(curl -s https://api.github.com/repos/kutovoys/xray-torrent-blocker/releases/latest | grep tag_name | cut -d '"' -f 4)
+    local url="https://github.com/kutovoys/xray-torrent-blocker/releases/download/${latest_release}/xray-torrent-blocker-${latest_release}-linux-${tb_arch}.tar.gz"
+
+    colorized_echo blue "Downloading tblocker ${latest_release}..."
+    mkdir -p /opt/tblocker
+    curl -sL "$url" -o /tmp/tblocker.tar.gz
+    tar -xzf /tmp/tblocker.tar.gz -C /opt/tblocker
+    rm -f /tmp/tblocker.tar.gz
+
+    curl -sL https://raw.githubusercontent.com/kutovoys/xray-torrent-blocker/main/tblocker.service \
+        -o /etc/systemd/system/tblocker.service
+
+    colorized_echo green "tblocker binary installed to /opt/tblocker/"
+}
+
+configure_tblocker_marzban() {
+    local firewall="$1"
+    local block_duration="$2"
+    local config_path="/opt/tblocker/config.yaml"
+
+    if [ -f "$config_path" ]; then
+        cp "$config_path" "${config_path}.bak"
+        colorized_echo yellow "Existing config backed up to ${config_path}.bak"
+    fi
+
+    cat > "$config_path" << 'EOFCONFIG'
+LogFile: "/var/lib/marzban/logs/access.log"
+BlockDuration: 10
+TorrentTag: "TORRENT"
+BlockMode: "iptables"
+StorageDir: "/opt/tblocker"
+UsernameRegex: "^\\d+\\.(.+)$"
+BypassIPS:
+  - "127.0.0.1"
+  - "::1"
+EOFCONFIG
+
+    sed -i "s|BlockDuration: 10|BlockDuration: ${block_duration}|" "$config_path"
+    sed -i "s|BlockMode: \"iptables\"|BlockMode: \"${firewall}\"|" "$config_path"
+
+    colorized_echo green "tblocker configured for Marzban: $config_path"
+}
+
+prepare_marzban_for_tblocker() {
+    local xray_config="$DATA_DIR/xray_config.json"
+
+    mkdir -p /var/lib/marzban/logs
+    colorized_echo green "Log directory ensured: /var/lib/marzban/logs"
+
+    if [ -f "$COMPOSE_FILE" ]; then
+        if ! command -v yq >/dev/null 2>&1; then
+            install_yq
+        fi
+        if ! grep -q "marzban-node" "$COMPOSE_FILE"; then
+            colorized_echo blue "Adding log volume to Marzban docker-compose.yml..."
+            yq -i '.services.marzban.volumes += ["/var/lib/marzban/logs:/var/lib/marzban-node"]' "$COMPOSE_FILE"
+            colorized_echo green "Log volume added to docker-compose.yml"
+        else
+            colorized_echo green "Log volume already present in docker-compose.yml"
+        fi
+    else
+        colorized_echo red "Marzban docker-compose.yml not found at $COMPOSE_FILE"
+        return 1
+    fi
+
+    if [ -f "$xray_config" ]; then
+        if ! command -v jq >/dev/null 2>&1; then
+            install_package jq
+        fi
+
+        colorized_echo blue "Updating xray config for torrent blocking..."
+        local tmp_config="${xray_config}.tmp"
+
+        jq '.log.access = "/var/lib/marzban-node/access.log" |
+            .log.error = "/var/lib/marzban-node/error.log"' \
+            "$xray_config" > "$tmp_config" && mv "$tmp_config" "$xray_config"
+
+        if ! jq -e '.routing.rules[] | select(.outboundTag == "TORRENT")' "$xray_config" >/dev/null 2>&1; then
+            jq '.routing.rules = [{"protocol": ["bittorrent"], "outboundTag": "TORRENT", "type": "field"}] + .routing.rules' \
+                "$xray_config" > "$tmp_config" && mv "$tmp_config" "$xray_config"
+            colorized_echo green "Bittorrent routing rule added"
+        else
+            colorized_echo green "Bittorrent routing rule already present"
+        fi
+
+        if ! jq -e '.outbounds[] | select(.tag == "TORRENT")' "$xray_config" >/dev/null 2>&1; then
+            jq '.outbounds += [{"protocol": "blackhole", "tag": "TORRENT"}]' \
+                "$xray_config" > "$tmp_config" && mv "$tmp_config" "$xray_config"
+            colorized_echo green "TORRENT blackhole outbound added"
+        else
+            colorized_echo green "TORRENT outbound already present"
+        fi
+
+        colorized_echo green "Xray config updated: $xray_config"
+    else
+        colorized_echo yellow "Xray config not found at $xray_config"
+        colorized_echo yellow "Please manually configure xray for torrent blocking"
+    fi
+
+    colorized_echo blue "Configuring logrotate for Marzban logs..."
+    cat > /etc/logrotate.d/marzban-xray << 'EOFLOGROTATE'
+/var/lib/marzban/logs/*.log {
+    size 50M
+    rotate 5
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOFLOGROTATE
+    colorized_echo green "Logrotate configured for /var/lib/marzban/logs/"
+}
+
+install_tblocker() {
+    local firewall="iptables"
+    local block_duration="10"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --firewall)
+                firewall="$2"
+                if [[ "$firewall" != "iptables" && "$firewall" != "nft" ]]; then
+                    colorized_echo red "Invalid firewall: $firewall. Use 'iptables' or 'nft'."
+                    exit 1
+                fi
+                shift 2
+            ;;
+            --duration)
+                block_duration="$2"
+                if ! [[ "$block_duration" =~ ^[0-9]+$ ]]; then
+                    colorized_echo red "Invalid duration: $block_duration. Must be a number (minutes)."
+                    exit 1
+                fi
+                shift 2
+            ;;
+            -h|--help)
+                colorized_echo cyan "Usage: marzban tblocker [options]"
+                echo ""
+                echo "OPTIONS:"
+                echo "  --firewall <iptables|nft>  Firewall to use for blocking (default: iptables)"
+                echo "  --duration <minutes>       Block duration in minutes (default: 10)"
+                echo "  -h, --help                 Show this help message"
+                echo ""
+                echo "EXAMPLES:"
+                echo "  marzban tblocker"
+                echo "  marzban tblocker --firewall nft --duration 15"
+                echo "  marzban tblocker --firewall iptables --duration 30"
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                colorized_echo yellow "Use 'marzban tblocker --help' for usage information."
+                exit 1
+            ;;
+        esac
+    done
+
+    check_running_as_root
+    detect_os
+
+    colorized_echo blue "====================================="
+    colorized_echo blue "    Xray Torrent Blocker Setup       "
+    colorized_echo blue "====================================="
+    colorized_echo cyan "  Firewall:       $firewall"
+    colorized_echo cyan "  Block duration: ${block_duration} min"
+    colorized_echo blue "====================================="
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban is not installed. Please install Marzban first."
+        exit 1
+    fi
+
+    if systemctl is-active --quiet tblocker 2>/dev/null; then
+        colorized_echo yellow "Stopping existing tblocker service..."
+        systemctl stop tblocker
+    fi
+
+    colorized_echo blue "Installing tblocker..."
+    if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg >/dev/null 2>&1
+        curl -s https://repo.remna.dev/xray-tools/public.gpg | gpg --yes --dearmor -o /usr/share/keyrings/openrepo-xray-tools.gpg >/dev/null 2>&1
+        echo "deb [arch=any signed-by=/usr/share/keyrings/openrepo-xray-tools.gpg] https://repo.remna.dev/xray-tools/ stable main" > /etc/apt/sources.list.d/openrepo-xray-tools.list
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y tblocker >/dev/null
+        colorized_echo green "tblocker installed from package repository"
+    elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "AlmaLinux"* ]] || [[ "$OS" == "Fedora"* ]]; then
+        cat > /etc/yum.repos.d/xray-tools-rpm.repo << 'EOFREPO'
+[xray-tools-rpm]
+name=xray-tools-rpm
+baseurl=https://repo.remna.dev/xray-tools-rpm
+enabled=1
+repo_gpgcheck=1
+gpgkey=https://repo.remna.dev/xray-tools-rpm/public.gpg
+EOFREPO
+        yum install -y tblocker
+        colorized_echo green "tblocker installed from package repository"
+    else
+        colorized_echo yellow "Package repository not available, installing from binary..."
+        install_tblocker_from_binary
+    fi
+
+    configure_tblocker_marzban "$firewall" "$block_duration"
+    prepare_marzban_for_tblocker
+
+    colorized_echo blue "Starting tblocker service..."
+    systemctl daemon-reload
+    systemctl enable tblocker
+    systemctl start tblocker
+
+    if systemctl is-active --quiet tblocker; then
+        colorized_echo green "tblocker service is running!"
+    else
+        colorized_echo red "Failed to start tblocker. Check: journalctl -u tblocker -f"
+    fi
+
+    colorized_echo blue "Restarting Marzban to apply changes..."
+    detect_compose
+    down_marzban
+    up_marzban
+
+    colorized_echo green "====================================="
+    colorized_echo green "  Torrent Blocker setup completed!   "
+    colorized_echo green "====================================="
+    colorized_echo cyan "tblocker config: /opt/tblocker/config.yaml"
+    colorized_echo cyan "tblocker logs:   journalctl -u tblocker -f"
+    colorized_echo cyan "tblocker status: systemctl status tblocker"
+}
+
 case "$1" in
     up)
         shift; up_command "$@";;
@@ -1918,6 +2193,8 @@ case "$1" in
         shift; update_core_command "$@";;
     migrate)
         shift; migrate_marzban "$@";;
+    tblocker)
+        shift; install_tblocker "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
