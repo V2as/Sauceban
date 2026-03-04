@@ -1497,40 +1497,76 @@ up_command() {
 
 update_command() {
     check_running_as_root
-    # Check if marzban is installed
+
     if ! is_marzban_installed; then
         colorized_echo red "Marzban's not installed!"
         exit 1
     fi
 
+    detect_os
     detect_compose
 
+    if ! command -v git >/dev/null 2>&1; then
+        install_package git
+    fi
+    if ! command -v rsync >/dev/null 2>&1; then
+        install_package rsync
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        install_package curl
+    fi
+
     update_marzban_script
-    colorized_echo blue "Pulling latest version"
+    colorized_echo blue "Updating Marzban..."
     update_marzban
 
     colorized_echo blue "Restarting Marzban's services"
     down_marzban
     up_marzban
 
-    colorized_echo blue "Marzban updated successfully"
+    colorized_echo green "Marzban updated successfully"
 }
 
 update_marzban_script() {
     FETCH_REPO="V2as/Sauceban"
     SCRIPT_URL="https://github.com/$FETCH_REPO/raw/master/sauceme.sh"
     colorized_echo blue "Updating marzban script"
-    curl -sSL $SCRIPT_URL | install -m 755 /dev/stdin /usr/local/bin/marzban
-    colorized_echo green "marzban script updated successfully"
+
+    local tmp_script
+    tmp_script=$(mktemp)
+    if curl -fsSL "$SCRIPT_URL" -o "$tmp_script"; then
+        install -m 755 "$tmp_script" /usr/local/bin/marzban
+        colorized_echo green "marzban script updated successfully"
+    else
+        colorized_echo red "Failed to download marzban script"
+    fi
+    rm -f "$tmp_script"
 }
 
 update_marzban() {
-    rm -r /tmp/sauceban/
-    # Клонируем во временную директорию
-    git clone -b master https://github.com/V2as/Sauceban.git /tmp/sauceban
-    # Копируем нужные файлы поверх существующих
-    rsync -av --exclude='docker-compose.yml' /tmp/sauceban/ "$APP_DIR"/
-    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull
+    local tmp_dir="/tmp/sauceban"
+    rm -rf "$tmp_dir"
+
+    if ! git clone -b master https://github.com/V2as/Sauceban.git "$tmp_dir"; then
+        colorized_echo red "Failed to clone Sauceban repository"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    rsync -av \
+        --exclude='docker-compose.yml' \
+        --exclude='.env' \
+        --exclude='.git' \
+        "$tmp_dir/" "$APP_DIR"/
+    rm -rf "$tmp_dir"
+
+    if grep -q "image:.*gozargah/marzban" "$COMPOSE_FILE"; then
+        colorized_echo blue "Pulling latest image..."
+        $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull marzban
+    elif grep -q "build:" "$COMPOSE_FILE"; then
+        colorized_echo blue "Rebuilding custom image..."
+        $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" build marzban
+    fi
 }
 
 migrate_marzban() {
