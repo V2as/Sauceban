@@ -123,8 +123,7 @@ install_docker() {
     # Используем jq, если нужно аккуратно вставить в существующий JSON,
     # но для простоты перезапишем файл новым конфигом:
     echo '{
-        "registry-mirrors": ["https://mirror.gcr.io"],
-        "dns": ["8.8.8.8", "1.1.1.1"]
+        "registry-mirrors": ["https://mirror.gcr.io"]
     }' | sudo tee $CONFIG_FILE > /dev/null
 
     echo "Конфигурация обновлена в $CONFIG_FILE"
@@ -1606,12 +1605,11 @@ ensure_docker_mirrors() {
     if [ ! -f "$DOCKER_DAEMON_JSON" ]; then
         cat > "$DOCKER_DAEMON_JSON" << 'EOFJSON'
 {
-    "registry-mirrors": ["https://mirror.gcr.io"],
-    "dns": ["8.8.8.8", "1.1.1.1"]
+    "registry-mirrors": ["https://mirror.gcr.io"]
 }
 EOFJSON
         need_restart=true
-        colorized_echo green "Docker daemon.json created with mirrors and DNS"
+        colorized_echo green "Docker daemon.json created with registry mirrors"
     else
         if command -v jq >/dev/null 2>&1; then
             if ! jq -e '."registry-mirrors"' "$DOCKER_DAEMON_JSON" >/dev/null 2>&1; then
@@ -1620,25 +1618,11 @@ EOFJSON
                 need_restart=true
                 colorized_echo green "Docker registry mirrors configured"
             fi
-            if ! jq -e '.dns' "$DOCKER_DAEMON_JSON" >/dev/null 2>&1; then
-                jq '. + {"dns": ["8.8.8.8", "1.1.1.1"]}' "$DOCKER_DAEMON_JSON" > /tmp/daemon.json.tmp \
-                    && mv /tmp/daemon.json.tmp "$DOCKER_DAEMON_JSON"
-                need_restart=true
-                colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
-            fi
         else
-            local changed=false
             if ! grep -q '"registry-mirrors"' "$DOCKER_DAEMON_JSON"; then
                 sed -i 's/}$/,\n    "registry-mirrors": ["https:\/\/mirror.gcr.io"]\n}/' "$DOCKER_DAEMON_JSON"
-                changed=true
-            fi
-            if ! grep -q '"dns"' "$DOCKER_DAEMON_JSON"; then
-                sed -i 's/}$/,\n    "dns": ["8.8.8.8", "1.1.1.1"]\n}/' "$DOCKER_DAEMON_JSON"
-                changed=true
-            fi
-            if [ "$changed" = true ]; then
                 need_restart=true
-                colorized_echo green "Docker mirrors/DNS configured"
+                colorized_echo green "Docker registry mirrors configured"
             fi
         fi
     fi
