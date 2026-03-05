@@ -1892,31 +1892,120 @@ usage() {
     echo
 }
 
-# Function to update the Marzban Main core
 update_core_command() {
     check_running_as_root
-    get_xray_core
-    # Change the Marzban core
+
+    local cli_version=""
+    local use_latest=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version)
+                cli_version="$2"
+                shift 2
+            ;;
+            --latest)
+                use_latest=true
+                shift
+            ;;
+            -h|--help)
+                colorized_echo cyan "Usage: marzban core-update [options]"
+                echo ""
+                echo "OPTIONS:"
+                echo "  --version <vX.Y.Z>   Install specific Xray-core version (non-interactive)"
+                echo "  --latest             Install the latest Xray-core version (non-interactive)"
+                echo "  -h, --help           Show this help message"
+                echo ""
+                echo "Without options — interactive menu with version selection."
+                echo ""
+                echo "EXAMPLES:"
+                echo "  marzban core-update"
+                echo "  marzban core-update --version v24.12.18"
+                echo "  marzban core-update --latest"
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                exit 1
+            ;;
+        esac
+    done
+
+    if [ "$use_latest" = true ]; then
+        identify_the_operating_system_and_architecture
+        detect_os
+
+        if ! command -v curl >/dev/null 2>&1; then
+            install_package curl
+        fi
+
+        local latest_tag
+        latest_tag=$(curl -s "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | grep -oP '"tag_name": "\K[^"]+')
+        if [ -z "$latest_tag" ]; then
+            colorized_echo red "Failed to fetch latest Xray-core version."
+            exit 1
+        fi
+        cli_version="$latest_tag"
+        colorized_echo blue "Latest Xray-core version: $cli_version"
+    fi
+
+    if [ -n "$cli_version" ]; then
+        identify_the_operating_system_and_architecture
+        detect_os
+
+        if ! command -v curl >/dev/null 2>&1; then
+            install_package curl
+        fi
+
+        local check_response
+        check_response=$(curl -s "https://api.github.com/repos/XTLS/Xray-core/releases/tags/$cli_version")
+        if echo "$check_response" | grep -q '"message": "Not Found"'; then
+            colorized_echo red "Version $cli_version does not exist."
+            exit 1
+        fi
+
+        colorized_echo green "Installing Xray-core $cli_version..."
+
+        if ! command -v unzip >/dev/null 2>&1; then
+            install_package unzip
+        fi
+        if ! command -v wget >/dev/null 2>&1; then
+            install_package wget
+        fi
+
+        mkdir -p "$DATA_DIR/xray-core"
+        cd "$DATA_DIR/xray-core"
+
+        local xray_filename="Xray-linux-$ARCH.zip"
+        local xray_download_url="https://github.com/XTLS/Xray-core/releases/download/${cli_version}/${xray_filename}"
+
+        colorized_echo blue "Downloading Xray-core ${cli_version}..."
+        wget -q -O "${xray_filename}" "${xray_download_url}"
+
+        colorized_echo blue "Extracting Xray-core..."
+        unzip -o "${xray_filename}" >/dev/null 2>&1
+        rm -f "${xray_filename}"
+
+        selected_version="$cli_version"
+    else
+        get_xray_core
+    fi
+
     xray_executable_path="XRAY_EXECUTABLE_PATH=\"/var/lib/marzban/xray-core/xray\""
 
-    echo "Changing the Marzban core..."
-    # Check if the XRAY_EXECUTABLE_PATH string already exists in the .env file
     if ! grep -q "^XRAY_EXECUTABLE_PATH=" "$ENV_FILE"; then
-        # If the string does not exist, add it
         echo "${xray_executable_path}" >> "$ENV_FILE"
     else
-        # Update the existing XRAY_EXECUTABLE_PATH line
         sed -i "s~^XRAY_EXECUTABLE_PATH=.*~${xray_executable_path}~" "$ENV_FILE"
     fi
 
-    # Restart Marzban
-    colorized_echo red "Restarting Marzban..."
+    colorized_echo blue "Restarting Marzban..."
     if restart_command -n >/dev/null 2>&1; then
         colorized_echo green "Marzban successfully restarted!"
     else
         colorized_echo red "Marzban restart failed!"
     fi
-    colorized_echo blue "Installation of Xray-core version $selected_version completed."
+    colorized_echo green "Xray-core $selected_version installed successfully."
 }
 
 install_tblocker_from_binary() {
