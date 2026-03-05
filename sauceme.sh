@@ -62,7 +62,7 @@ detect_and_update_package_manager() {
     colorized_echo blue "Updating package manager"
     if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
         PKG_MANAGER="apt-get"
-        $PKG_MANAGER update
+        DEBIAN_FRONTEND=noninteractive $PKG_MANAGER update -qq
     elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "AlmaLinux"* ]]; then
         PKG_MANAGER="yum"
         $PKG_MANAGER update -y
@@ -90,7 +90,7 @@ install_package () {
     PACKAGE=$1
     colorized_echo blue "Installing $PACKAGE"
     if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
-        $PKG_MANAGER -y install "$PACKAGE"
+        DEBIAN_FRONTEND=noninteractive $PKG_MANAGER -y install "$PACKAGE"
     elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "AlmaLinux"* ]]; then
         $PKG_MANAGER install -y "$PACKAGE"
     elif [ "$OS" == "Fedora"* ]; then
@@ -1877,6 +1877,7 @@ usage() {
     colorized_echo yellow "  core-update     $(tput sgr0)– Update/Change Xray core"
     colorized_echo yellow "  migrate         $(tput sgr0)– Switch Marzban source (image or build)"
     colorized_echo yellow "  tblocker        $(tput sgr0)– Install Xray Torrent Blocker for Marzban"
+    colorized_echo yellow "  tblocker-config $(tput sgr0)– Manage tblocker webhook settings"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -1953,6 +1954,8 @@ install_tblocker_from_binary() {
 configure_tblocker_marzban() {
     local firewall="$1"
     local block_duration="$2"
+    local webhook_url="$3"
+    local webhook_token="$4"
     local config_path="/opt/tblocker/config.yaml"
 
     if [ -f "$config_path" ]; then
@@ -1974,6 +1977,19 @@ EOFCONFIG
 
     sed -i "s|BlockDuration: 10|BlockDuration: ${block_duration}|" "$config_path"
     sed -i "s|BlockMode: \"iptables\"|BlockMode: \"${firewall}\"|" "$config_path"
+
+    if [ -n "$webhook_url" ]; then
+        local token="${webhook_token:-your-token}"
+        cat >> "$config_path" << EOFWEBHOOK
+SendWebhook: true
+WebhookURL: "${webhook_url}"
+WebhookTemplate: '{"username":"%s","ip":"%s","server":"%s","action":"%s","duration":%d,"timestamp":"%s"}'
+WebhookHeaders:
+  Authorization: "Bearer ${token}"
+  Content-Type: "application/json"
+EOFWEBHOOK
+        colorized_echo green "Webhook configured: $webhook_url"
+    fi
 
     colorized_echo green "tblocker configured for Marzban: $config_path"
 }
@@ -2051,6 +2067,8 @@ EOFLOGROTATE
 install_tblocker() {
     local firewall="iptables"
     local block_duration="10"
+    local webhook_url=""
+    local webhook_token=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -2070,18 +2088,29 @@ install_tblocker() {
                 fi
                 shift 2
             ;;
+            --webhook-url)
+                webhook_url="$2"
+                shift 2
+            ;;
+            --webhook-token)
+                webhook_token="$2"
+                shift 2
+            ;;
             -h|--help)
                 colorized_echo cyan "Usage: marzban tblocker [options]"
                 echo ""
                 echo "OPTIONS:"
                 echo "  --firewall <iptables|nft>  Firewall to use for blocking (default: iptables)"
                 echo "  --duration <minutes>       Block duration in minutes (default: 10)"
+                echo "  --webhook-url <URL>        Webhook URL (enables SendWebhook automatically)"
+                echo "  --webhook-token <TOKEN>    Bearer token for webhook Authorization header"
                 echo "  -h, --help                 Show this help message"
                 echo ""
                 echo "EXAMPLES:"
                 echo "  marzban tblocker"
                 echo "  marzban tblocker --firewall nft --duration 15"
                 echo "  marzban tblocker --firewall iptables --duration 30"
+                echo "  marzban tblocker --webhook-url https://example.com/hook --webhook-token my-token"
                 exit 0
             ;;
             *)
@@ -2100,6 +2129,10 @@ install_tblocker() {
     colorized_echo blue "====================================="
     colorized_echo cyan "  Firewall:       $firewall"
     colorized_echo cyan "  Block duration: ${block_duration} min"
+    if [ -n "$webhook_url" ]; then
+        colorized_echo cyan "  Webhook URL:    $webhook_url"
+        colorized_echo cyan "  Webhook token:  ***"
+    fi
     colorized_echo blue "====================================="
 
     if ! is_marzban_installed; then
@@ -2137,7 +2170,7 @@ EOFREPO
         install_tblocker_from_binary
     fi
 
-    configure_tblocker_marzban "$firewall" "$block_duration"
+    configure_tblocker_marzban "$firewall" "$block_duration" "$webhook_url" "$webhook_token"
     prepare_marzban_for_tblocker
 
     colorized_echo blue "Starting tblocker service..."
@@ -2162,6 +2195,138 @@ EOFREPO
     colorized_echo cyan "tblocker config: /opt/tblocker/config.yaml"
     colorized_echo cyan "tblocker logs:   journalctl -u tblocker -f"
     colorized_echo cyan "tblocker status: systemctl status tblocker"
+    if [ -n "$webhook_url" ]; then
+        colorized_echo cyan "webhook:         enabled"
+    fi
+    echo ""
+    colorized_echo cyan "To manage webhook after install:"
+    colorized_echo cyan "  marzban tblocker-config set-webhook-url <URL>"
+    colorized_echo cyan "  marzban tblocker-config set-webhook-token <TOKEN>"
+    colorized_echo cyan "  marzban tblocker-config show"
+}
+
+tblocker_config_command() {
+    check_running_as_root
+
+    local config_path="/opt/tblocker/config.yaml"
+
+    tblocker_config_usage() {
+        colorized_echo cyan "Usage: marzban tblocker-config <command> [value]"
+        echo ""
+        colorized_echo yellow "Commands:"
+        echo "  set-webhook-url <URL>       Set WebhookURL and enable SendWebhook"
+        echo "  set-webhook-token <TOKEN>   Set Authorization Bearer token"
+        echo "  enable-webhook              Enable webhook notifications"
+        echo "  disable-webhook             Disable webhook notifications"
+        echo "  show                        Show current tblocker configuration"
+        echo "  get <KEY>                   Get value of a specific config key"
+        echo ""
+        colorized_echo yellow "Examples:"
+        echo "  marzban tblocker-config set-webhook-url https://example.com/hook"
+        echo "  marzban tblocker-config set-webhook-token my-secret-token"
+        echo "  marzban tblocker-config enable-webhook"
+        echo "  marzban tblocker-config show"
+    }
+
+    if [ ! -f "$config_path" ]; then
+        colorized_echo red "tblocker config not found: $config_path"
+        colorized_echo yellow "Install tblocker first: marzban tblocker"
+        exit 1
+    fi
+
+    local command="${1:-}"
+    local value="${2:-}"
+
+    case "$command" in
+        set-webhook-url)
+            if [ -z "$value" ]; then
+                colorized_echo red "URL is required."
+                echo "Usage: marzban tblocker-config set-webhook-url <URL>"
+                exit 1
+            fi
+            if grep -q "^WebhookURL:" "$config_path"; then
+                sed -i "s|^WebhookURL:.*|WebhookURL: \"$value\"|" "$config_path"
+            else
+                echo "WebhookURL: \"$value\"" >> "$config_path"
+            fi
+            if grep -q "^SendWebhook:" "$config_path"; then
+                sed -i "s|^SendWebhook:.*|SendWebhook: true|" "$config_path"
+            else
+                echo "SendWebhook: true" >> "$config_path"
+            fi
+            if ! grep -q "^WebhookTemplate:" "$config_path"; then
+                echo "WebhookTemplate: '{\"username\":\"%s\",\"ip\":\"%s\",\"server\":\"%s\",\"action\":\"%s\",\"duration\":%d,\"timestamp\":\"%s\"}'" >> "$config_path"
+            fi
+            if ! grep -q "^WebhookHeaders:" "$config_path"; then
+                {
+                    echo "WebhookHeaders:"
+                    echo "  Authorization: \"Bearer your-token\""
+                    echo "  Content-Type: \"application/json\""
+                } >> "$config_path"
+            fi
+            colorized_echo green "WebhookURL set to: $value"
+            colorized_echo green "SendWebhook: enabled"
+            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+        ;;
+        set-webhook-token)
+            if [ -z "$value" ]; then
+                colorized_echo red "Token is required."
+                echo "Usage: marzban tblocker-config set-webhook-token <TOKEN>"
+                exit 1
+            fi
+            if grep -q "^  Authorization:" "$config_path"; then
+                sed -i "s|^  Authorization:.*|  Authorization: \"Bearer $value\"|" "$config_path"
+            elif grep -q "^WebhookHeaders:" "$config_path"; then
+                sed -i "/^WebhookHeaders:/a\\  Authorization: \"Bearer $value\"" "$config_path"
+            else
+                {
+                    echo "WebhookHeaders:"
+                    echo "  Authorization: \"Bearer $value\""
+                    echo "  Content-Type: \"application/json\""
+                } >> "$config_path"
+            fi
+            colorized_echo green "Authorization Bearer token updated"
+            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+        ;;
+        enable-webhook)
+            if grep -q "^SendWebhook:" "$config_path"; then
+                sed -i "s|^SendWebhook:.*|SendWebhook: true|" "$config_path"
+            else
+                echo "SendWebhook: true" >> "$config_path"
+            fi
+            colorized_echo green "Webhook enabled"
+            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+        ;;
+        disable-webhook)
+            if grep -q "^SendWebhook:" "$config_path"; then
+                sed -i "s|^SendWebhook:.*|SendWebhook: false|" "$config_path"
+            else
+                echo "SendWebhook: false" >> "$config_path"
+            fi
+            colorized_echo green "Webhook disabled"
+            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+        ;;
+        show)
+            colorized_echo cyan "=== tblocker config: $config_path ==="
+            cat "$config_path"
+        ;;
+        get)
+            if [ -z "$value" ]; then
+                colorized_echo red "Key is required."
+                echo "Usage: marzban tblocker-config get <KEY>"
+                exit 1
+            fi
+            grep "^${value}:" "$config_path" || colorized_echo red "Key not found: $value"
+        ;;
+        -h|--help|"")
+            tblocker_config_usage
+        ;;
+        *)
+            colorized_echo red "Unknown command: $command"
+            tblocker_config_usage
+            exit 1
+        ;;
+    esac
 }
 
 case "$1" in
@@ -2195,6 +2360,8 @@ case "$1" in
         shift; migrate_marzban "$@";;
     tblocker)
         shift; install_tblocker "$@";;
+    tblocker-config)
+        shift; tblocker_config_command "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
