@@ -1099,6 +1099,7 @@ install_command() {
     if ! command -v docker >/dev/null 2>&1; then
         install_docker
     fi
+    ensure_docker_mirrors
     if ! command -v yq >/dev/null 2>&1; then
         install_yq
     fi
@@ -1544,6 +1545,7 @@ update_marzban() {
 
     if [[ -n "$current_image" && "$current_image" != "null" ]]; then
         colorized_echo blue "Current mode: image ($current_image)"
+        ensure_docker_mirrors
         colorized_echo blue "Pulling latest image..."
         $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull marzban
 
@@ -1584,7 +1586,7 @@ update_marzban() {
             "$tmp_dir/" "$APP_DIR"/
         rm -rf "$tmp_dir"
 
-        ensure_docker_dns
+        ensure_docker_mirrors
         colorized_echo blue "Rebuilding image..."
         $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" build marzban
     else
@@ -1593,24 +1595,62 @@ update_marzban() {
     fi
 }
 
-ensure_docker_dns() {
+ensure_docker_mirrors() {
     local DOCKER_DAEMON_JSON="/etc/docker/daemon.json"
-    if [ -f "$DOCKER_DAEMON_JSON" ]; then
-        if ! grep -q '"dns"' "$DOCKER_DAEMON_JSON"; then
-            if command -v jq >/dev/null 2>&1; then
+    local need_restart=false
+
+    if [ ! -d "/etc/docker" ]; then
+        mkdir -p /etc/docker
+    fi
+
+    if [ ! -f "$DOCKER_DAEMON_JSON" ]; then
+        cat > "$DOCKER_DAEMON_JSON" << 'EOFJSON'
+{
+    "registry-mirrors": ["https://mirror.gcr.io"],
+    "dns": ["8.8.8.8", "1.1.1.1"]
+}
+EOFJSON
+        need_restart=true
+        colorized_echo green "Docker daemon.json created with mirrors and DNS"
+    else
+        if command -v jq >/dev/null 2>&1; then
+            if ! jq -e '."registry-mirrors"' "$DOCKER_DAEMON_JSON" >/dev/null 2>&1; then
+                jq '. + {"registry-mirrors": ["https://mirror.gcr.io"]}' "$DOCKER_DAEMON_JSON" > /tmp/daemon.json.tmp \
+                    && mv /tmp/daemon.json.tmp "$DOCKER_DAEMON_JSON"
+                need_restart=true
+                colorized_echo green "Docker registry mirrors configured"
+            fi
+            if ! jq -e '.dns' "$DOCKER_DAEMON_JSON" >/dev/null 2>&1; then
                 jq '. + {"dns": ["8.8.8.8", "1.1.1.1"]}' "$DOCKER_DAEMON_JSON" > /tmp/daemon.json.tmp \
                     && mv /tmp/daemon.json.tmp "$DOCKER_DAEMON_JSON"
-            else
-                sed -i 's/}$/,\n    "dns": ["8.8.8.8", "1.1.1.1"]\n}/' "$DOCKER_DAEMON_JSON"
+                need_restart=true
+                colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
             fi
-            systemctl restart docker
-            colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
+        else
+            local changed=false
+            if ! grep -q '"registry-mirrors"' "$DOCKER_DAEMON_JSON"; then
+                sed -i 's/}$/,\n    "registry-mirrors": ["https:\/\/mirror.gcr.io"]\n}/' "$DOCKER_DAEMON_JSON"
+                changed=true
+            fi
+            if ! grep -q '"dns"' "$DOCKER_DAEMON_JSON"; then
+                sed -i 's/}$/,\n    "dns": ["8.8.8.8", "1.1.1.1"]\n}/' "$DOCKER_DAEMON_JSON"
+                changed=true
+            fi
+            if [ "$changed" = true ]; then
+                need_restart=true
+                colorized_echo green "Docker mirrors/DNS configured"
+            fi
         fi
-    else
-        echo '{"dns": ["8.8.8.8", "1.1.1.1"]}' > "$DOCKER_DAEMON_JSON"
-        systemctl restart docker
-        colorized_echo green "Docker DNS configured (8.8.8.8, 1.1.1.1)"
     fi
+
+    if [ "$need_restart" = true ]; then
+        systemctl restart docker
+        colorized_echo green "Docker daemon restarted to apply configuration"
+    fi
+}
+
+ensure_docker_dns() {
+    ensure_docker_mirrors
 }
 
 migrate_help() {
@@ -1736,11 +1776,12 @@ migrate_marzban() {
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" stop marzban
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" rm -f marzban
 
+    ensure_docker_mirrors
+
     if [[ "$mode" == "image" ]]; then
         colorized_echo blue "Pulling $image_name..."
         $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" pull marzban
     else
-        ensure_docker_dns
         colorized_echo blue "Building image from source..."
         $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" build marzban
     fi
