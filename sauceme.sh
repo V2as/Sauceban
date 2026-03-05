@@ -2422,7 +2422,8 @@ tblocker_config_command() {
 log_clean_command() {
     check_running_as_root
 
-    local LOG_FILE="/var/lib/marzban/logs/access.log"
+    local ACCESS_LOG="/var/lib/marzban/logs/access.log"
+    local ERROR_LOG="/var/lib/marzban/logs/error.log"
     local CRON_TAG="# tblocker-log-clean"
     local interval=""
     local action=""
@@ -2434,8 +2435,10 @@ log_clean_command() {
         echo "  --interval <hours>   Set up periodic log cleanup every N hours (1-24)"
         echo "  --disable            Remove the log cleanup cron job"
         echo "  --status             Show current log cleanup cron schedule"
-        echo "  --now                Clean the log file right now (one-time)"
+        echo "  --now                Clean log files right now (one-time)"
         echo "  -h, --help           Show this help message"
+        echo ""
+        colorized_echo yellow "Cleans both access.log and error.log"
         echo ""
         colorized_echo yellow "Examples:"
         echo "  marzban log-clean --interval 6       # clean every 6 hours"
@@ -2487,15 +2490,17 @@ log_clean_command() {
 
     case "$action" in
         now)
-            if [ -f "$LOG_FILE" ]; then
-                truncate -s 0 "$LOG_FILE"
-                colorized_echo green "Log file cleaned: $LOG_FILE"
-            else
-                colorized_echo yellow "Log file not found: $LOG_FILE"
-            fi
+            for logfile in "$ACCESS_LOG" "$ERROR_LOG"; do
+                if [ -f "$logfile" ]; then
+                    truncate -s 0 "$logfile"
+                    colorized_echo green "Cleaned: $logfile"
+                else
+                    colorized_echo yellow "Not found: $logfile"
+                fi
+            done
         ;;
         set)
-            local cron_cmd="truncate -s 0 $LOG_FILE $CRON_TAG"
+            local cron_cmd="truncate -s 0 $ACCESS_LOG && truncate -s 0 $ERROR_LOG $CRON_TAG"
             local schedule
 
             if [ "$interval" -eq 24 ]; then
@@ -2516,6 +2521,7 @@ log_clean_command() {
                 else
                     colorized_echo green "Log cleanup scheduled: every $interval hour(s)"
                 fi
+                colorized_echo cyan "  Files: access.log, error.log"
             else
                 colorized_echo red "Failed to set cron job."
             fi
@@ -2557,11 +2563,13 @@ log_clean_command() {
                     fi
                 fi
 
-                if [ -f "$LOG_FILE" ]; then
-                    local size
-                    size=$(du -h "$LOG_FILE" | cut -f1)
-                    colorized_echo cyan "  Current log size: $size"
-                fi
+                for logfile in "$ACCESS_LOG" "$ERROR_LOG"; do
+                    if [ -f "$logfile" ]; then
+                        local size
+                        size=$(du -h "$logfile" | cut -f1)
+                        colorized_echo cyan "  $(basename "$logfile"): $size"
+                    fi
+                done
             else
                 colorized_echo yellow "Log cleanup is not configured."
                 colorized_echo cyan "Set it up: marzban log-clean --interval <hours>"
