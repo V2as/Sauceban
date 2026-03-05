@@ -31,6 +31,7 @@ marzban <команда> [опции]
 - [migrate](#migrate) — Миграция между источниками (image / build)
 - [tblocker](#tblocker) — Установка Xray Torrent Blocker
 - [tblocker-config](#tblocker-config) — Управление вебхуком tblocker
+- [log-clean](#log-clean) — Очистка access-лога по расписанию
 - [edit](#edit) — Редактирование docker-compose.yml
 - [edit-env](#edit-env) — Редактирование .env
 - [install-script](#install-script) — Установка скрипта marzban
@@ -391,6 +392,57 @@ marzban tblocker-config get WebhookURL
 > ```bash
 > systemctl restart tblocker
 > ```
+
+---
+
+## log-clean
+
+Управление очисткой access-лога (`/var/lib/marzban/logs/access.log`), который использует tblocker. Позволяет настроить автоматическую очистку по cron, чтобы лог не переполнял диск.
+
+**Настроить очистку каждые 6 часов:**
+
+```bash
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/sauceme.sh)" @ log-clean --interval 6
+```
+
+**Очистка раз в сутки (в полночь):**
+
+```bash
+marzban log-clean --interval 24
+```
+
+**Очистить лог прямо сейчас (разовая операция):**
+
+```bash
+marzban log-clean --now
+```
+
+**Посмотреть текущее расписание и размер лога:**
+
+```bash
+marzban log-clean --status
+```
+
+**Изменить интервал (просто вызвать с новым значением — старый cron заменится):**
+
+```bash
+marzban log-clean --interval 12
+```
+
+**Отключить автоматическую очистку:**
+
+```bash
+marzban log-clean --disable
+```
+
+| Опция | Описание |
+|---|---|
+| `--interval <часы>` | Настроить очистку каждые N часов (1–24). Повторный вызов заменяет предыдущее расписание |
+| `--now` | Очистить лог немедленно (одноразово, без cron) |
+| `--status` | Показать текущее расписание очистки и размер лога |
+| `--disable` | Удалить cron-задачу очистки |
+
+> **Примечание:** `--interval` использует `truncate -s 0`, что обнуляет файл без удаления — безопасно для процессов, которые держат файл открытым (tblocker, xray).
 
 ---
 

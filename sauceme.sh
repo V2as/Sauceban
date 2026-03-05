@@ -1878,6 +1878,7 @@ usage() {
     colorized_echo yellow "  migrate         $(tput sgr0)– Switch Marzban source (image or build)"
     colorized_echo yellow "  tblocker        $(tput sgr0)– Install Xray Torrent Blocker for Marzban"
     colorized_echo yellow "  tblocker-config $(tput sgr0)– Manage tblocker webhook settings"
+    colorized_echo yellow "  log-clean       $(tput sgr0)– Schedule or run access log cleanup"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -2329,6 +2330,157 @@ tblocker_config_command() {
     esac
 }
 
+log_clean_command() {
+    check_running_as_root
+
+    local LOG_FILE="/var/lib/marzban/logs/access.log"
+    local CRON_TAG="# tblocker-log-clean"
+    local interval=""
+    local action=""
+
+    log_clean_usage() {
+        colorized_echo cyan "Usage: marzban log-clean [options]"
+        echo ""
+        colorized_echo yellow "Options:"
+        echo "  --interval <hours>   Set up periodic log cleanup every N hours (1-24)"
+        echo "  --disable            Remove the log cleanup cron job"
+        echo "  --status             Show current log cleanup cron schedule"
+        echo "  --now                Clean the log file right now (one-time)"
+        echo "  -h, --help           Show this help message"
+        echo ""
+        colorized_echo yellow "Examples:"
+        echo "  marzban log-clean --interval 6       # clean every 6 hours"
+        echo "  marzban log-clean --interval 24      # clean once a day at midnight"
+        echo "  marzban log-clean --now              # clean right now"
+        echo "  marzban log-clean --status           # show current schedule"
+        echo "  marzban log-clean --disable          # remove scheduled cleanup"
+    }
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interval)
+                interval="$2"
+                action="set"
+                if ! [[ "$interval" =~ ^[0-9]+$ ]] || [ "$interval" -lt 1 ] || [ "$interval" -gt 24 ]; then
+                    colorized_echo red "Invalid interval: must be a number between 1 and 24."
+                    exit 1
+                fi
+                shift 2
+            ;;
+            --disable)
+                action="disable"
+                shift
+            ;;
+            --status)
+                action="status"
+                shift
+            ;;
+            --now)
+                action="now"
+                shift
+            ;;
+            -h|--help)
+                log_clean_usage
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                log_clean_usage
+                exit 1
+            ;;
+        esac
+    done
+
+    if [ -z "$action" ]; then
+        log_clean_usage
+        exit 1
+    fi
+
+    case "$action" in
+        now)
+            if [ -f "$LOG_FILE" ]; then
+                truncate -s 0 "$LOG_FILE"
+                colorized_echo green "Log file cleaned: $LOG_FILE"
+            else
+                colorized_echo yellow "Log file not found: $LOG_FILE"
+            fi
+        ;;
+        set)
+            local cron_cmd="truncate -s 0 $LOG_FILE $CRON_TAG"
+            local schedule
+
+            if [ "$interval" -eq 24 ]; then
+                schedule="0 0 * * *"
+            else
+                schedule="0 */$interval * * *"
+            fi
+
+            local temp_cron
+            temp_cron=$(mktemp)
+            crontab -l 2>/dev/null > "$temp_cron" || true
+            grep -v "$CRON_TAG" "$temp_cron" > "${temp_cron}.tmp" && mv "${temp_cron}.tmp" "$temp_cron"
+            echo "$schedule $cron_cmd" >> "$temp_cron"
+
+            if crontab "$temp_cron"; then
+                if [ "$interval" -eq 24 ]; then
+                    colorized_echo green "Log cleanup scheduled: daily at midnight"
+                else
+                    colorized_echo green "Log cleanup scheduled: every $interval hour(s)"
+                fi
+            else
+                colorized_echo red "Failed to set cron job."
+            fi
+            rm -f "$temp_cron"
+        ;;
+        disable)
+            local temp_cron
+            temp_cron=$(mktemp)
+            crontab -l 2>/dev/null > "$temp_cron" || true
+
+            if grep -q "$CRON_TAG" "$temp_cron"; then
+                grep -v "$CRON_TAG" "$temp_cron" > "${temp_cron}.tmp" && mv "${temp_cron}.tmp" "$temp_cron"
+                if crontab "$temp_cron"; then
+                    colorized_echo green "Log cleanup cron job removed."
+                else
+                    colorized_echo red "Failed to update crontab."
+                fi
+            else
+                colorized_echo yellow "No log cleanup cron job found."
+            fi
+            rm -f "$temp_cron"
+        ;;
+        status)
+            local current
+            current=$(crontab -l 2>/dev/null | grep "$CRON_TAG" || true)
+            if [ -n "$current" ]; then
+                colorized_echo green "Log cleanup is active:"
+                echo "  $current"
+
+                local sched
+                sched=$(echo "$current" | awk '{print $2}')
+                if [ "$sched" = "0" ]; then
+                    colorized_echo cyan "  Schedule: daily at midnight"
+                else
+                    local hrs
+                    hrs=$(echo "$sched" | grep -oP '(?<=\*/)\d+' || echo "")
+                    if [ -n "$hrs" ]; then
+                        colorized_echo cyan "  Schedule: every ${hrs} hour(s)"
+                    fi
+                fi
+
+                if [ -f "$LOG_FILE" ]; then
+                    local size
+                    size=$(du -h "$LOG_FILE" | cut -f1)
+                    colorized_echo cyan "  Current log size: $size"
+                fi
+            else
+                colorized_echo yellow "Log cleanup is not configured."
+                colorized_echo cyan "Set it up: marzban log-clean --interval <hours>"
+            fi
+        ;;
+    esac
+}
+
 case "$1" in
     up)
         shift; up_command "$@";;
@@ -2362,6 +2514,8 @@ case "$1" in
         shift; install_tblocker "$@";;
     tblocker-config)
         shift; tblocker_config_command "$@";;
+    log-clean)
+        shift; log_clean_command "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
