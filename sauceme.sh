@@ -1879,6 +1879,7 @@ usage() {
     colorized_echo yellow "  tblocker        $(tput sgr0)– Install Xray Torrent Blocker for Marzban"
     colorized_echo yellow "  tblocker-config $(tput sgr0)– Manage tblocker webhook settings"
     colorized_echo yellow "  log-clean       $(tput sgr0)– Schedule or run access log cleanup"
+    colorized_echo yellow "  update-html     $(tput sgr0)– Update custom HTML templates (home & subscription)"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -2578,6 +2579,140 @@ log_clean_command() {
     esac
 }
 
+update_html_command() {
+    check_running_as_root
+
+    local TEMPLATES_DIR="/var/lib/marzban/templates"
+    local GITHUB_RAW="https://raw.githubusercontent.com/V2as/Sauceban/master"
+
+    update_html_usage() {
+        colorized_echo cyan "Usage: marzban update-html [options]"
+        echo ""
+        colorized_echo yellow "Options:"
+        echo "  --home               Update only the home page template"
+        echo "  --sub                Update only the subscription page template"
+        echo "  --all                Update both templates (default)"
+        echo "  --status             Show current template status"
+        echo "  -h, --help           Show this help message"
+        echo ""
+        colorized_echo yellow "Templates:"
+        echo "  home.html -> $TEMPLATES_DIR/home/index.html"
+        echo "  sub.html  -> $TEMPLATES_DIR/subscription/index.html"
+        echo ""
+        colorized_echo yellow "Examples:"
+        echo "  marzban update-html"
+        echo "  marzban update-html --home"
+        echo "  marzban update-html --sub"
+        echo "  marzban update-html --status"
+    }
+
+    local action="all"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --home)
+                action="home"
+                shift
+            ;;
+            --sub)
+                action="sub"
+                shift
+            ;;
+            --all)
+                action="all"
+                shift
+            ;;
+            --status)
+                action="status"
+                shift
+            ;;
+            -h|--help)
+                update_html_usage
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                update_html_usage
+                exit 1
+            ;;
+        esac
+    done
+
+    if [ "$action" = "status" ]; then
+        colorized_echo cyan "=== Custom HTML Templates Status ==="
+        for tpl in "home/index.html" "subscription/index.html"; do
+            local fpath="$TEMPLATES_DIR/$tpl"
+            if [ -f "$fpath" ]; then
+                local size
+                size=$(du -h "$fpath" | cut -f1)
+                local mtime
+                mtime=$(stat -c '%y' "$fpath" 2>/dev/null || stat -f '%Sm' "$fpath" 2>/dev/null)
+                colorized_echo green "  $tpl: $size (modified: $mtime)"
+            else
+                colorized_echo yellow "  $tpl: not installed"
+            fi
+        done
+
+        if grep -q "^CUSTOM_TEMPLATES_DIRECTORY" "$ENV_FILE" 2>/dev/null; then
+            colorized_echo green "  CUSTOM_TEMPLATES_DIRECTORY is set in .env"
+        else
+            colorized_echo yellow "  CUSTOM_TEMPLATES_DIRECTORY is NOT set in .env"
+        fi
+        return
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        detect_os
+        install_package curl
+    fi
+
+    mkdir -p "$TEMPLATES_DIR/home"
+    mkdir -p "$TEMPLATES_DIR/subscription"
+
+    if [ "$action" = "home" ] || [ "$action" = "all" ]; then
+        colorized_echo blue "Downloading home page template..."
+        if curl -fsSL "$GITHUB_RAW/home.html" -o "$TEMPLATES_DIR/home/index.html"; then
+            colorized_echo green "Home page updated: $TEMPLATES_DIR/home/index.html"
+        else
+            colorized_echo red "Failed to download home.html"
+        fi
+    fi
+
+    if [ "$action" = "sub" ] || [ "$action" = "all" ]; then
+        colorized_echo blue "Downloading subscription page template..."
+        if curl -fsSL "$GITHUB_RAW/sub.html" -o "$TEMPLATES_DIR/subscription/index.html"; then
+            colorized_echo green "Subscription page updated: $TEMPLATES_DIR/subscription/index.html"
+        else
+            colorized_echo red "Failed to download sub.html"
+        fi
+    fi
+
+    if [ -f "$ENV_FILE" ]; then
+        if ! grep -q "^CUSTOM_TEMPLATES_DIRECTORY" "$ENV_FILE"; then
+            echo "" >> "$ENV_FILE"
+            echo "CUSTOM_TEMPLATES_DIRECTORY=\"$TEMPLATES_DIR/\"" >> "$ENV_FILE"
+            colorized_echo green "CUSTOM_TEMPLATES_DIRECTORY added to .env"
+        else
+            colorized_echo green "CUSTOM_TEMPLATES_DIRECTORY already set in .env"
+        fi
+    else
+        colorized_echo yellow ".env file not found at $ENV_FILE"
+        colorized_echo yellow "After installing Marzban, add to .env:"
+        colorized_echo cyan "  CUSTOM_TEMPLATES_DIRECTORY=\"$TEMPLATES_DIR/\""
+    fi
+
+    colorized_echo blue "Restarting Marzban to apply templates..."
+    detect_compose
+    down_marzban
+    up_marzban
+
+    colorized_echo green "====================================="
+    colorized_echo green "  HTML templates updated!            "
+    colorized_echo green "====================================="
+    colorized_echo cyan "Home page:         $TEMPLATES_DIR/home/index.html"
+    colorized_echo cyan "Subscription page: $TEMPLATES_DIR/subscription/index.html"
+}
+
 case "$1" in
     up)
         shift; up_command "$@";;
@@ -2613,6 +2748,8 @@ case "$1" in
         shift; tblocker_config_command "$@";;
     log-clean)
         shift; log_clean_command "$@";;
+    update-html)
+        shift; update_html_command "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)

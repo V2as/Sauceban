@@ -32,6 +32,7 @@ marzban <команда> [опции]
 - [tblocker](#tblocker) — Установка Xray Torrent Blocker
 - [tblocker-config](#tblocker-config) — Управление вебхуком tblocker
 - [log-clean](#log-clean) — Очистка access-лога по расписанию
+- [update-html](#update-html) — Обновление кастомных HTML-шаблонов
 - [edit](#edit) — Редактирование docker-compose.yml
 - [edit-env](#edit-env) — Редактирование .env
 - [install-script](#install-script) — Установка скрипта marzban
@@ -468,6 +469,48 @@ marzban log-clean --disable
 
 ---
 
+## update-html
+
+Обновить кастомные HTML-шаблоны для маскировки панели. Скачивает шаблоны из GitHub-репозитория и размещает их в `/var/lib/marzban/templates/`. Автоматически добавляет `CUSTOM_TEMPLATES_DIRECTORY` в `.env` и перезапускает Marzban.
+
+**Шаблоны:**
+
+| Файл в репозитории | Назначение | Путь на сервере |
+|---|---|---|
+| `home.html` | Главная страница (вместо `/`) — маскировка под интернет-магазин | `/var/lib/marzban/templates/home/index.html` |
+| `sub.html` | Страница подписки (`/sub/<token>`) — редирект в `blacktemple://import/` | `/var/lib/marzban/templates/subscription/index.html` |
+
+**Обновить оба шаблона (по умолчанию):**
+
+```bash
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/sauceme.sh)" @ update-html
+```
+
+**Обновить только главную страницу:**
+
+```bash
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/sauceme.sh)" @ update-html --home
+```
+
+**Обновить только страницу подписки:**
+
+```bash
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/sauceme.sh)" @ update-html --sub
+```
+
+**Посмотреть статус шаблонов:**
+
+```bash
+marzban update-html --status
+```
+
+**Как работают шаблоны:**
+
+- **home.html** — при заходе на корневой URL панели (без `/dashboard`) посетитель видит страницу интернет-магазина «GloMart». При попытке нажать на товар показывается форма регистрации, при нажатии «Зарегистрироваться» выводится сообщение «Доступ запрещён по вашему IP».
+- **sub.html** — при открытии ссылки `/sub/<token>` из браузера происходит автоматический редирект на `blacktemple://import/<полный URL>`, что открывает ссылку напрямую в приложении.
+
+---
+
 ## edit
 
 Открыть `docker-compose.yml` в текстовом редакторе (nano или vi).
@@ -524,6 +567,7 @@ marzban help
 | `/var/lib/marzban/` | Данные Marzban (БД, конфиги xray, логи) |
 | `/opt/tblocker/config.yaml` | Конфигурация Torrent Blocker |
 | `/var/lib/marzban/logs/` | Логи xray (access.log, error.log) |
+| `/var/lib/marzban/templates/` | Кастомные HTML-шаблоны (home, subscription) |
 
 ## Полезные команды для диагностики
 
