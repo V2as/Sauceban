@@ -1902,7 +1902,7 @@ usage() {
     colorized_echo yellow "  core-update     $(tput sgr0)– Update/Change Xray core"
     colorized_echo yellow "  migrate         $(tput sgr0)– Switch Marzban source (image or build)"
     colorized_echo yellow "  tblocker        $(tput sgr0)– Install Xray Torrent Blocker for Marzban"
-    colorized_echo yellow "  tblocker-config $(tput sgr0)– Manage tblocker webhook settings"
+    colorized_echo yellow "  tblocker-config $(tput sgr0)– Manage tblocker configuration"
     colorized_echo yellow "  log-clean       $(tput sgr0)– Schedule or run access log cleanup"
     colorized_echo yellow "  update-html     $(tput sgr0)– Update custom HTML templates (home & subscription)"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
@@ -2326,22 +2326,79 @@ tblocker_config_command() {
 
     local config_path="/opt/tblocker/config.yaml"
 
+    _tbc_set_key() {
+        local key="$1" val="$2"
+        if grep -q "^${key}:" "$config_path"; then
+            sed -i "s|^${key}:.*|${key}: ${val}|" "$config_path"
+        else
+            echo "${key}: ${val}" >> "$config_path"
+        fi
+    }
+
+    _tbc_set_quoted() {
+        _tbc_set_key "$1" "\"$2\""
+    }
+
+    _tbc_set_bool() {
+        _tbc_set_key "$1" "$2"
+    }
+
+    _tbc_set_int() {
+        _tbc_set_key "$1" "$2"
+    }
+
+    _tbc_require_value() {
+        if [ -z "$1" ]; then
+            colorized_echo red "$2 is required."
+            echo "Usage: marzban tblocker-config $3"
+            exit 1
+        fi
+    }
+
+    _tbc_done() {
+        colorized_echo green "$1"
+        colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+    }
+
     tblocker_config_usage() {
         colorized_echo cyan "Usage: marzban tblocker-config <command> [value]"
         echo ""
-        colorized_echo yellow "Commands:"
-        echo "  set-webhook-url <URL>       Set WebhookURL and enable SendWebhook"
-        echo "  set-webhook-token <TOKEN>   Set Authorization Bearer token"
-        echo "  enable-webhook              Enable webhook notifications"
-        echo "  disable-webhook             Disable webhook notifications"
-        echo "  show                        Show current tblocker configuration"
-        echo "  get <KEY>                   Get value of a specific config key"
+        colorized_echo yellow "General:"
+        echo "  show                          Show full config"
+        echo "  get <KEY>                     Get value of a config key"
+        echo "  restart                       Restart tblocker service"
+        echo ""
+        colorized_echo yellow "Core settings:"
+        echo "  set-duration <minutes>        Block duration in minutes (default: 10)"
+        echo "  set-firewall <iptables|nft>   Firewall mode for blocking"
+        echo "  set-log-file <path>           Path to xray access log"
+        echo "  set-torrent-tag <tag>         Tag for torrent detection (default: TORRENT)"
+        echo "  set-storage-dir <path>        Directory for blocked IPs storage"
+        echo "  set-hostname <name>           Server hostname for webhook"
+        echo "  set-username-regex <regex>    Regex to process username from log"
+        echo ""
+        colorized_echo yellow "Bypass IPs:"
+        echo "  add-bypass-ip <IP>            Add IP to bypass list"
+        echo "  remove-bypass-ip <IP>         Remove IP from bypass list"
+        echo "  list-bypass-ips               Show all bypass IPs"
+        echo ""
+        colorized_echo yellow "Webhook:"
+        echo "  set-webhook-url <URL>         Set WebhookURL (auto-enables webhook)"
+        echo "  set-webhook-token <TOKEN>     Set Authorization Bearer token"
+        echo "  set-webhook-template <TPL>    Set webhook JSON template"
+        echo "  enable-webhook                Enable webhook notifications"
+        echo "  disable-webhook               Disable webhook notifications"
         echo ""
         colorized_echo yellow "Examples:"
+        echo "  marzban tblocker-config set-duration 30"
+        echo "  marzban tblocker-config set-firewall nft"
         echo "  marzban tblocker-config set-webhook-url https://example.com/hook"
         echo "  marzban tblocker-config set-webhook-token my-secret-token"
-        echo "  marzban tblocker-config enable-webhook"
+        echo "  marzban tblocker-config add-bypass-ip 192.168.1.1"
+        echo "  marzban tblocker-config set-hostname my-server"
+        echo "  marzban tblocker-config set-username-regex '^\\d+\\.(.+)\$'"
         echo "  marzban tblocker-config show"
+        echo "  marzban tblocker-config restart"
     }
 
     if [ ! -f "$config_path" ]; then
@@ -2354,22 +2411,111 @@ tblocker_config_command() {
     local value="${2:-}"
 
     case "$command" in
-        set-webhook-url)
-            if [ -z "$value" ]; then
-                colorized_echo red "URL is required."
-                echo "Usage: marzban tblocker-config set-webhook-url <URL>"
+
+        set-duration)
+            _tbc_require_value "$value" "Duration" "set-duration <minutes>"
+            if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$value" -lt 1 ]; then
+                colorized_echo red "Duration must be a positive number (minutes)."
                 exit 1
             fi
-            if grep -q "^WebhookURL:" "$config_path"; then
-                sed -i "s|^WebhookURL:.*|WebhookURL: \"$value\"|" "$config_path"
-            else
-                echo "WebhookURL: \"$value\"" >> "$config_path"
+            _tbc_set_int "BlockDuration" "$value"
+            _tbc_done "BlockDuration set to: ${value} minutes"
+        ;;
+
+        set-firewall)
+            _tbc_require_value "$value" "Firewall mode" "set-firewall <iptables|nft>"
+            if [[ "$value" != "iptables" && "$value" != "nft" ]]; then
+                colorized_echo red "Invalid firewall mode. Use 'iptables' or 'nft'."
+                exit 1
             fi
-            if grep -q "^SendWebhook:" "$config_path"; then
-                sed -i "s|^SendWebhook:.*|SendWebhook: true|" "$config_path"
+            _tbc_set_quoted "BlockMode" "$value"
+            _tbc_done "BlockMode set to: $value"
+        ;;
+
+        set-log-file)
+            _tbc_require_value "$value" "Log file path" "set-log-file <path>"
+            _tbc_set_quoted "LogFile" "$value"
+            _tbc_done "LogFile set to: $value"
+        ;;
+
+        set-torrent-tag)
+            _tbc_require_value "$value" "Torrent tag" "set-torrent-tag <tag>"
+            _tbc_set_quoted "TorrentTag" "$value"
+            _tbc_done "TorrentTag set to: $value"
+        ;;
+
+        set-storage-dir)
+            _tbc_require_value "$value" "Storage directory" "set-storage-dir <path>"
+            _tbc_set_quoted "StorageDir" "$value"
+            _tbc_done "StorageDir set to: $value"
+        ;;
+
+        set-hostname)
+            _tbc_require_value "$value" "Hostname" "set-hostname <name>"
+            _tbc_set_quoted "Hostname" "$value"
+            _tbc_done "Hostname set to: $value"
+        ;;
+
+        set-username-regex)
+            _tbc_require_value "$value" "Regex" "set-username-regex <regex>"
+            _tbc_set_quoted "UsernameRegex" "$value"
+            _tbc_done "UsernameRegex set to: $value"
+        ;;
+
+        add-bypass-ip)
+            _tbc_require_value "$value" "IP address" "add-bypass-ip <IP>"
+            if grep -q "^BypassIPS:" "$config_path"; then
+                if grep -q "^  - \"${value}\"" "$config_path"; then
+                    colorized_echo yellow "IP $value already in bypass list"
+                    return
+                fi
+                sed -i "/^BypassIPS:/a\\  - \"${value}\"" "$config_path"
             else
-                echo "SendWebhook: true" >> "$config_path"
+                {
+                    echo "BypassIPS:"
+                    echo "  - \"${value}\""
+                } >> "$config_path"
             fi
+            _tbc_done "Added bypass IP: $value"
+        ;;
+
+        remove-bypass-ip)
+            _tbc_require_value "$value" "IP address" "remove-bypass-ip <IP>"
+            if grep -q "^  - \"${value}\"" "$config_path"; then
+                sed -i "/^  - \"${value}\"$/d" "$config_path"
+                _tbc_done "Removed bypass IP: $value"
+            else
+                colorized_echo yellow "IP $value not found in bypass list"
+            fi
+        ;;
+
+        list-bypass-ips)
+            colorized_echo cyan "Bypass IPs:"
+            local in_list=false
+            while IFS= read -r line; do
+                if echo "$line" | grep -q "^BypassIPS:"; then
+                    in_list=true
+                    continue
+                fi
+                if [ "$in_list" = true ]; then
+                    if echo "$line" | grep -q "^  - "; then
+                        local ip
+                        ip=$(echo "$line" | sed 's/^  - "\(.*\)"$/\1/' | sed "s/^  - '\(.*\)'$/\1/" | sed 's/^  - //')
+                        echo "  $ip"
+                    else
+                        break
+                    fi
+                fi
+            done < "$config_path"
+            if [ "$in_list" = false ]; then
+                colorized_echo yellow "  No BypassIPS configured"
+            fi
+        ;;
+
+        set-webhook-url)
+            _tbc_require_value "$value" "URL" "set-webhook-url <URL>"
+            _tbc_set_quoted "WebhookURL" "$value"
+            _tbc_set_bool "SendWebhook" "true"
             if ! grep -q "^WebhookTemplate:" "$config_path"; then
                 echo "WebhookTemplate: '{\"username\":\"%s\",\"ip\":\"%s\",\"server\":\"%s\",\"action\":\"%s\",\"duration\":%d,\"timestamp\":\"%s\"}'" >> "$config_path"
             fi
@@ -2381,15 +2527,11 @@ tblocker_config_command() {
                 } >> "$config_path"
             fi
             colorized_echo green "WebhookURL set to: $value"
-            colorized_echo green "SendWebhook: enabled"
-            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+            _tbc_done "SendWebhook: enabled"
         ;;
+
         set-webhook-token)
-            if [ -z "$value" ]; then
-                colorized_echo red "Token is required."
-                echo "Usage: marzban tblocker-config set-webhook-token <TOKEN>"
-                exit 1
-            fi
+            _tbc_require_value "$value" "Token" "set-webhook-token <TOKEN>"
             if grep -q "^  Authorization:" "$config_path"; then
                 sed -i "s|^  Authorization:.*|  Authorization: \"Bearer $value\"|" "$config_path"
             elif grep -q "^WebhookHeaders:" "$config_path"; then
@@ -2401,42 +2543,66 @@ tblocker_config_command() {
                     echo "  Content-Type: \"application/json\""
                 } >> "$config_path"
             fi
-            colorized_echo green "Authorization Bearer token updated"
-            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+            _tbc_done "Authorization Bearer token updated"
         ;;
+
+        set-webhook-template)
+            _tbc_require_value "$value" "Template" "set-webhook-template <template>"
+            if grep -q "^WebhookTemplate:" "$config_path"; then
+                sed -i "s|^WebhookTemplate:.*|WebhookTemplate: '$value'|" "$config_path"
+            else
+                echo "WebhookTemplate: '$value'" >> "$config_path"
+            fi
+            _tbc_done "WebhookTemplate updated"
+        ;;
+
         enable-webhook)
-            if grep -q "^SendWebhook:" "$config_path"; then
-                sed -i "s|^SendWebhook:.*|SendWebhook: true|" "$config_path"
-            else
-                echo "SendWebhook: true" >> "$config_path"
-            fi
-            colorized_echo green "Webhook enabled"
-            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+            _tbc_set_bool "SendWebhook" "true"
+            _tbc_done "Webhook enabled"
         ;;
+
         disable-webhook)
-            if grep -q "^SendWebhook:" "$config_path"; then
-                sed -i "s|^SendWebhook:.*|SendWebhook: false|" "$config_path"
-            else
-                echo "SendWebhook: false" >> "$config_path"
-            fi
-            colorized_echo green "Webhook disabled"
-            colorized_echo yellow "Restart tblocker to apply: systemctl restart tblocker"
+            _tbc_set_bool "SendWebhook" "false"
+            _tbc_done "Webhook disabled"
         ;;
+
         show)
             colorized_echo cyan "=== tblocker config: $config_path ==="
+            echo ""
             cat "$config_path"
-        ;;
-        get)
-            if [ -z "$value" ]; then
-                colorized_echo red "Key is required."
-                echo "Usage: marzban tblocker-config get <KEY>"
-                exit 1
+            echo ""
+            if systemctl is-active --quiet tblocker 2>/dev/null; then
+                colorized_echo green "Service status: running"
+            else
+                colorized_echo red "Service status: stopped"
             fi
-            grep "^${value}:" "$config_path" || colorized_echo red "Key not found: $value"
         ;;
+
+        get)
+            _tbc_require_value "$value" "Key" "get <KEY>"
+            local result
+            result=$(grep "^${value}:" "$config_path" 2>/dev/null)
+            if [ -n "$result" ]; then
+                echo "$result"
+            else
+                colorized_echo red "Key not found: $value"
+            fi
+        ;;
+
+        restart)
+            colorized_echo blue "Restarting tblocker..."
+            systemctl restart tblocker
+            if systemctl is-active --quiet tblocker; then
+                colorized_echo green "tblocker restarted successfully"
+            else
+                colorized_echo red "tblocker failed to start. Check: journalctl -u tblocker -f"
+            fi
+        ;;
+
         -h|--help|"")
             tblocker_config_usage
         ;;
+
         *)
             colorized_echo red "Unknown command: $command"
             tblocker_config_usage

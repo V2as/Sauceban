@@ -30,7 +30,7 @@ marzban <команда> [опции]
 - [core-update](#core-update) — Обновление Xray-core
 - [migrate](#migrate) — Миграция между источниками (image / build)
 - [tblocker](#tblocker) — Установка Xray Torrent Blocker
-- [tblocker-config](#tblocker-config) — Управление вебхуком tblocker
+- [tblocker-config](#tblocker-config) — Управление конфигурацией tblocker
 - [log-clean](#log-clean) — Очистка access-лога по расписанию
 - [update-html](#update-html) — Обновление кастомных HTML-шаблонов
 - [edit](#edit) — Редактирование docker-compose.yml
@@ -360,7 +360,80 @@ WebhookHeaders:
 
 ## tblocker-config
 
-Управление конфигурацией вебхука tblocker после установки. Позволяет менять URL, токен, включать/выключать вебхук без ручного редактирования конфига.
+Полное управление конфигурацией tblocker (`/opt/tblocker/config.yaml`) без ручного редактирования файла. Все параметры можно менять через CLI.
+
+### Основные параметры
+
+**Установить длительность блокировки (в минутах):**
+
+```bash
+marzban tblocker-config set-duration 30
+```
+
+**Установить режим фаервола:**
+
+```bash
+marzban tblocker-config set-firewall nft
+```
+
+**Изменить путь к лог-файлу:**
+
+```bash
+marzban tblocker-config set-log-file "/var/lib/marzban/logs/access.log"
+```
+
+**Изменить тег торрента:**
+
+```bash
+marzban tblocker-config set-torrent-tag "TORRENT"
+```
+
+**Установить директорию хранения:**
+
+```bash
+marzban tblocker-config set-storage-dir "/opt/tblocker"
+```
+
+**Установить имя хоста (для вебхука):**
+
+```bash
+marzban tblocker-config set-hostname "my-server"
+```
+
+**Установить regex обработки имени пользователя:**
+
+```bash
+# Убрать числовой ID из Marzban: "12345.username" -> "username"
+marzban tblocker-config set-username-regex '^\\d+\\.(.+)$'
+
+# Извлечь Telegram ID: "user_tgid-12345" -> "12345"
+marzban tblocker-config set-username-regex '_tgid-(\\d+)'
+
+# Оставить как есть (по умолчанию)
+marzban tblocker-config set-username-regex '^(.+)$'
+```
+
+### Bypass IPs
+
+**Добавить IP в белый список:**
+
+```bash
+marzban tblocker-config add-bypass-ip 192.168.1.100
+```
+
+**Удалить IP из белого списка:**
+
+```bash
+marzban tblocker-config remove-bypass-ip 192.168.1.100
+```
+
+**Показать все IP в белом списке:**
+
+```bash
+marzban tblocker-config list-bypass-ips
+```
+
+### Webhook
 
 **Установить URL вебхука (автоматически включает SendWebhook):**
 
@@ -368,25 +441,28 @@ WebhookHeaders:
 marzban tblocker-config set-webhook-url "https://your-webhook-url.com/endpoint"
 ```
 
-**Установить или заменить Bearer-токен:**
+**Установить Bearer-токен:**
 
 ```bash
-marzban tblocker-config set-webhook-token "your-new-secret-token"
+marzban tblocker-config set-webhook-token "your-secret-token"
 ```
 
-**Включить вебхук:**
+**Установить шаблон вебхука:**
+
+```bash
+marzban tblocker-config set-webhook-template '{"user":"%s","ip":"%s","server":"%s","action":"%s","duration":%d,"ts":"%s"}'
+```
+
+**Включить / выключить вебхук:**
 
 ```bash
 marzban tblocker-config enable-webhook
-```
-
-**Выключить вебхук:**
-
-```bash
 marzban tblocker-config disable-webhook
 ```
 
-**Посмотреть текущий конфиг:**
+### Общие команды
+
+**Посмотреть текущий конфиг + статус сервиса:**
 
 ```bash
 marzban tblocker-config show
@@ -395,22 +471,40 @@ marzban tblocker-config show
 **Получить значение конкретного параметра:**
 
 ```bash
+marzban tblocker-config get BlockDuration
 marzban tblocker-config get WebhookURL
 ```
 
+**Перезапустить tblocker (применить изменения):**
+
+```bash
+marzban tblocker-config restart
+```
+
+### Все подкоманды
+
 | Подкоманда | Описание |
 |---|---|
-| `set-webhook-url <URL>` | Установить WebhookURL и включить SendWebhook |
-| `set-webhook-token <TOKEN>` | Установить/заменить Bearer-токен в заголовке Authorization |
-| `enable-webhook` | Включить отправку вебхуков (`SendWebhook: true`) |
-| `disable-webhook` | Выключить отправку вебхуков (`SendWebhook: false`) |
-| `show` | Вывести полный конфиг `/opt/tblocker/config.yaml` |
+| `set-duration <мин>` | Установить `BlockDuration` — время блокировки в минутах |
+| `set-firewall <iptables\|nft>` | Установить `BlockMode` — режим фаервола |
+| `set-log-file <путь>` | Установить `LogFile` — путь к access-логу |
+| `set-torrent-tag <тег>` | Установить `TorrentTag` — тег для обнаружения торрентов |
+| `set-storage-dir <путь>` | Установить `StorageDir` — директория хранения данных |
+| `set-hostname <имя>` | Установить `Hostname` — имя сервера |
+| `set-username-regex <regex>` | Установить `UsernameRegex` — regex для обработки имени |
+| `add-bypass-ip <IP>` | Добавить IP в `BypassIPS` (белый список) |
+| `remove-bypass-ip <IP>` | Удалить IP из `BypassIPS` |
+| `list-bypass-ips` | Показать все IP в `BypassIPS` |
+| `set-webhook-url <URL>` | Установить `WebhookURL` и включить `SendWebhook` |
+| `set-webhook-token <TOKEN>` | Установить Bearer-токен в `WebhookHeaders` |
+| `set-webhook-template <TPL>` | Установить `WebhookTemplate` |
+| `enable-webhook` | Включить вебхук (`SendWebhook: true`) |
+| `disable-webhook` | Выключить вебхук (`SendWebhook: false`) |
+| `show` | Вывести полный конфиг + статус сервиса |
 | `get <KEY>` | Получить значение конкретного ключа |
+| `restart` | Перезапустить сервис tblocker |
 
-> **Важно:** После изменений через `tblocker-config` необходимо перезапустить сервис:
-> ```bash
-> systemctl restart tblocker
-> ```
+> **Совет:** После любых изменений выполните `marzban tblocker-config restart` чтобы применить их.
 
 ---
 
