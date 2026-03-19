@@ -2781,29 +2781,46 @@ update_html_command() {
         echo ""
         colorized_echo yellow "Options:"
         echo "  --home               Update only the home page template"
+        echo "  --home-variant <1|2> Choose home page variant (default: 1)"
+        echo "                         1 = GloMart store disguise (home.html)"
+        echo "                         2 = Futuristic redirect to cheapchat.net (home2.html)"
         echo "  --sub                Update only the subscription page template"
         echo "  --all                Update both templates (default)"
         echo "  --status             Show current template status"
         echo "  -h, --help           Show this help message"
         echo ""
         colorized_echo yellow "Templates:"
-        echo "  home.html -> $TEMPLATES_DIR/home/index.html"
-        echo "  sub.html  -> $TEMPLATES_DIR/subscription/index.html"
+        echo "  home.html  -> $TEMPLATES_DIR/home/index.html  (variant 1, default)"
+        echo "  home2.html -> $TEMPLATES_DIR/home/index.html  (variant 2, redirect)"
+        echo "  sub.html   -> $TEMPLATES_DIR/subscription/index.html"
         echo ""
         colorized_echo yellow "Examples:"
         echo "  marzban update-html"
         echo "  marzban update-html --home"
+        echo "  marzban update-html --home --home-variant 2"
+        echo "  marzban update-html --home-variant 2"
         echo "  marzban update-html --sub"
         echo "  marzban update-html --status"
     }
 
     local action="all"
+    local home_variant="1"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --home)
                 action="home"
                 shift
+            ;;
+            --home-variant)
+                if [[ -n "$2" ]] && [[ "$2" =~ ^[12]$ ]]; then
+                    home_variant="$2"
+                    shift 2
+                else
+                    colorized_echo red "Error: --home-variant requires 1 or 2"
+                    update_html_usage
+                    exit 1
+                fi
             ;;
             --sub)
                 action="sub"
@@ -2861,11 +2878,17 @@ update_html_command() {
     mkdir -p "$TEMPLATES_DIR/subscription"
 
     if [ "$action" = "home" ] || [ "$action" = "all" ]; then
-        colorized_echo blue "Downloading home page template..."
-        if curl -fsSL "$GITHUB_RAW/home.html" -o "$TEMPLATES_DIR/home/index.html"; then
-            colorized_echo green "Home page updated: $TEMPLATES_DIR/home/index.html"
+        local home_file="home.html"
+        local variant_label="GloMart store disguise"
+        if [ "$home_variant" = "2" ]; then
+            home_file="home2.html"
+            variant_label="Futuristic redirect to cheapchat.net"
+        fi
+        colorized_echo blue "Downloading home page template (variant $home_variant: $variant_label)..."
+        if curl -fsSL "$GITHUB_RAW/$home_file" -o "$TEMPLATES_DIR/home/index.html"; then
+            colorized_echo green "Home page updated: $TEMPLATES_DIR/home/index.html (variant $home_variant)"
         else
-            colorized_echo red "Failed to download home.html"
+            colorized_echo red "Failed to download $home_file"
         fi
     fi
 
