@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="4;url=https://cheapchat.net">
+<title>Перенаправление</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{background:#0a0a0f;font-family:'Courier New',monospace;display:flex;align-items:center;justify-content:center;color:#fff}
+.scene{position:relative;text-align:center;z-index:2}
+.grid-bg{position:fixed;inset:0;background:
+  linear-gradient(rgba(0,255,200,.03) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(0,255,200,.03) 1px,transparent 1px);
+  background-size:60px 60px;animation:gridScroll 8s linear infinite;z-index:0}
+@keyframes gridScroll{to{background-position:60px 60px}}
+.glow-orb{position:fixed;border-radius:50%;filter:blur(100px);opacity:.15;z-index:1}
+.glow-orb.a{width:500px;height:500px;background:#00ffc8;top:-10%;left:-5%;animation:orbFloat 10s ease-in-out infinite}
+.glow-orb.b{width:400px;height:400px;background:#6366f1;bottom:-10%;right:-5%;animation:orbFloat 12s ease-in-out infinite reverse}
+@keyframes orbFloat{0%,100%{transform:translate(0,0)}50%{transform:translate(40px,30px)}}
+.title{font-size:clamp(18px,3.5vw,32px);font-weight:400;letter-spacing:2px;color:#00ffc8;text-shadow:0 0 20px rgba(0,255,200,.4),0 0 60px rgba(0,255,200,.15);margin-bottom:40px;opacity:0;animation:fadeSlide .8s ease forwards .2s}
+.subtitle{font-size:clamp(12px,2vw,15px);color:rgba(255,255,255,.35);letter-spacing:1px;margin-bottom:48px;opacity:0;animation:fadeSlide .8s ease forwards .5s}
+@keyframes fadeSlide{to{opacity:1;transform:translateY(0)}}
+.title,.subtitle{transform:translateY(20px)}
+.loader{display:flex;align-items:center;justify-content:center;gap:16px;opacity:0;animation:fadeSlide .8s ease forwards .8s;transform:translateY(20px)}
+.bar-track{width:clamp(180px,40vw,320px);height:3px;background:rgba(255,255,255,.08);border-radius:4px;overflow:hidden;position:relative}
+.bar-fill{height:100%;width:0;background:linear-gradient(90deg,#00ffc8,#6366f1);border-radius:4px;box-shadow:0 0 12px rgba(0,255,200,.5);animation:fillBar 3.5s ease-in-out forwards 1s}
+@keyframes fillBar{to{width:100%}}
+.pct{font-size:13px;color:rgba(255,255,255,.5);min-width:36px;text-align:right;font-variant-numeric:tabular-nums}
+.particles{position:fixed;inset:0;z-index:1;overflow:hidden}
+.particles span{position:absolute;width:2px;height:2px;background:#00ffc8;border-radius:50%;opacity:0;animation:particle 6s linear infinite}
+.particles span:nth-child(1){left:15%;animation-delay:0s;animation-duration:7s}
+.particles span:nth-child(2){left:30%;animation-delay:1.2s;animation-duration:5s}
+.particles span:nth-child(3){left:50%;animation-delay:2.5s;animation-duration:8s}
+.particles span:nth-child(4){left:70%;animation-delay:.6s;animation-duration:6s}
+.particles span:nth-child(5){left:85%;animation-delay:3s;animation-duration:7.5s}
+.particles span:nth-child(6){left:10%;animation-delay:1.8s;animation-duration:5.5s}
+.particles span:nth-child(7){left:60%;animation-delay:4s;animation-duration:6.5s}
+.particles span:nth-child(8){left:40%;animation-delay:2s;animation-duration:9s}
+@keyframes particle{0%{bottom:-4px;opacity:0}10%{opacity:.6}90%{opacity:.6}100%{bottom:105%;opacity:0}}
+.link{margin-top:32px;opacity:0;animation:fadeSlide .8s ease forwards 1.2s;transform:translateY(20px)}
+.link a{color:rgba(255,255,255,.3);font-size:12px;text-decoration:none;transition:color .3s}
+.link a:hover{color:#00ffc8}
+</style>
+</head>
+<body>
+<div class="grid-bg"></div>
+<div class="glow-orb a"></div>
+<div class="glow-orb b"></div>
+<div class="particles"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+<div class="scene">
+<div class="title">Перенаправляю вас с API на главную сайта</div>
+<div class="subtitle">cheapchat.net</div>
+<div class="loader">
+<div class="bar-track"><div class="bar-fill"></div></div>
+<div class="pct" id="pct">0%</div>
+</div>
+<div class="link"><a href="https://cheapchat.net">перейти сейчас &rarr;</a></div>
+</div>
+<script>
+(function(){
+  var el=document.getElementById('pct'),start=Date.now(),dur=3500;
+  function tick(){
+    var p=Math.min((Date.now()-start)/dur,1);
+    el.textContent=Math.round(p*100)+'%';
+    if(p<1)requestAnimationFrame(tick);
+  }
+  setTimeout(tick,1000);
+  setTimeout(function(){window.location.href='https://cheapchat.net'},4000);
+})();
+</script>
+</body>
+</html>
