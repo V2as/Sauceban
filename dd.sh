@@ -41,6 +41,7 @@ SKIP_CRON=false
 # ─── Colored output ────────────────────────────────────────────────────────
 
 log_info()  { printf '\e[92m[INFO]\e[0m  %s\n' "$*"; }
+log_ok()    { printf '\e[92m[OK]\e[0m    %s\n' "$*"; }
 log_warn()  { printf '\e[93m[WARN]\e[0m  %s\n' "$*"; }
 log_error() { printf '\e[91m[ERROR]\e[0m %s\n' "$*" >&2; }
 log_step()  { printf '\n\e[96m══ %s ══\e[0m\n' "$*"; }
