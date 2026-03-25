@@ -23,6 +23,7 @@ REALITY_PORT="12000"
 
 CF_TOKEN=""
 CF_ACCOUNT_ID=""
+CF_ZONE_ID=""
 DASH_DOMAIN=""
 SELF_STEAL_DOMAIN=""
 WILDCARD=false
@@ -56,7 +57,8 @@ Required:
 
 Cloudflare (needed to re-issue wildcard certs if missing):
   --cf-token      <token>    Cloudflare API token
-  --cf-account-id <id>       Cloudflare Account ID
+  --cf-account-id <id>       Cloudflare Account ID (use this OR --cf-zone-id)
+  --cf-zone-id    <id>       Cloudflare Zone ID (more reliable for scoped tokens)
   --wildcard                 Expect wildcard certificate
 
 Optional:
@@ -86,6 +88,7 @@ parse_args() {
             --ss-domain)      SELF_STEAL_DOMAIN="$2"; shift 2 ;;
             --cf-token)       CF_TOKEN="$2";          shift 2 ;;
             --cf-account-id)  CF_ACCOUNT_ID="$2";     shift 2 ;;
+            --cf-zone-id)     CF_ZONE_ID="$2";        shift 2 ;;
             --marzban-dir)    MARZBAN_DIR="$2";       shift 2 ;;
             --uvicorn-port)   UVICORN_PORT="$2";      shift 2 ;;
             --reality-port)   REALITY_PORT="$2";      shift 2 ;;
@@ -248,8 +251,12 @@ fix_certificates() {
     mkdir -p "$CERT_DIR"
 
     if [[ "$WILDCARD" == true ]]; then
-        if [[ -z "$CF_TOKEN" || -z "$CF_ACCOUNT_ID" ]]; then
-            log_error "Cannot re-issue wildcard cert: --cf-token and --cf-account-id required"
+        if [[ -z "$CF_TOKEN" ]]; then
+            log_error "Cannot re-issue wildcard cert: --cf-token required"
+            return 1
+        fi
+        if [[ -z "$CF_ACCOUNT_ID" && -z "$CF_ZONE_ID" ]]; then
+            log_error "Cannot re-issue wildcard cert: --cf-account-id or --cf-zone-id required"
             return 1
         fi
 
@@ -259,13 +266,17 @@ fix_certificates() {
         fi
 
         export CF_Token="$CF_TOKEN"
-        export CF_Account_ID="$CF_ACCOUNT_ID"
+        [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
+        [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
 
         log_fix "Re-issuing wildcard cert for *.${BASE_DOMAIN}"
-        "$ACME_HOME/acme.sh" --issue --dns dns_cf \
+        if ! "$ACME_HOME/acme.sh" --issue --dns dns_cf \
             -d "${BASE_DOMAIN}" \
             -d "*.${BASE_DOMAIN}" \
-            --force || true
+            --force --log; then
+            log_error "Wildcard cert issue failed. Check CF token/zone. Log: ${ACME_HOME}/acme.sh.log"
+            return 1
+        fi
 
         local reload_cmd=""
         command -v nginx &>/dev/null && reload_cmd="systemctl reload nginx"
@@ -323,10 +334,11 @@ fix_certificates() {
 
         if [[ "$WILDCARD" == true && -n "$CF_TOKEN" ]]; then
             export CF_Token="$CF_TOKEN"
-            export CF_Account_ID="$CF_ACCOUNT_ID"
+            [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
+            [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
             log_fix "Re-issuing SS cert for ${SELF_STEAL_DOMAIN} via DNS-01"
             "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-                -d "$SELF_STEAL_DOMAIN" --force || true
+                -d "$SELF_STEAL_DOMAIN" --force --log || true
         else
             log_fix "Re-issuing SS cert for ${SELF_STEAL_DOMAIN} via standalone"
             "$ACME_HOME/acme.sh" --issue --standalone \

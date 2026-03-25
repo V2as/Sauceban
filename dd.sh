@@ -27,6 +27,7 @@ REALITY_PORT="12000"
 
 CF_TOKEN=""
 CF_ACCOUNT_ID=""
+CF_ZONE_ID=""
 DASH_DOMAIN=""
 SELF_STEAL_DOMAIN=""
 WILDCARD=false
@@ -55,7 +56,8 @@ Required:
 
 Cloudflare DNS-01 (required for wildcard certs, optional otherwise):
   --cf-token      <token>    Cloudflare API token (DNS edit permission)
-  --cf-account-id <id>       Cloudflare Account ID
+  --cf-account-id <id>       Cloudflare Account ID (use this OR --cf-zone-id)
+  --cf-zone-id    <id>       Cloudflare Zone ID (more reliable for scoped tokens)
   --wildcard                 Issue wildcard certificate (*.domain) — requires Cloudflare
 
 Optional:
@@ -71,7 +73,12 @@ Examples:
   dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
         --acme-email "your@email.com"
 
-  # Wildcard certificate via Cloudflare DNS-01
+  # Wildcard certificate via Cloudflare DNS-01 (with Zone ID — recommended)
+  dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
+        --acme-email "your@email.com" \
+        --cf-token "your_api_token" --cf-zone-id "your_zone_id" --wildcard
+
+  # Wildcard certificate via Cloudflare DNS-01 (with Account ID)
   dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
         --acme-email "your@email.com" \
         --cf-token "your_api_token" --cf-account-id "your_account_id" --wildcard
@@ -88,6 +95,7 @@ parse_args() {
             --ss-domain)      SELF_STEAL_DOMAIN="$2"; shift 2 ;;
             --cf-token)       CF_TOKEN="$2";          shift 2 ;;
             --cf-account-id)  CF_ACCOUNT_ID="$2";     shift 2 ;;
+            --cf-zone-id)     CF_ZONE_ID="$2";        shift 2 ;;
             --acme-email)     ACME_EMAIL="$2";        shift 2 ;;
             --marzban-dir)    MARZBAN_DIR="$2";       shift 2 ;;
             --uvicorn-port)   UVICORN_PORT="$2";      shift 2 ;;
@@ -114,8 +122,12 @@ parse_args() {
     fi
 
     if [[ "$WILDCARD" == true ]]; then
-        if [[ -z "$CF_TOKEN" || -z "$CF_ACCOUNT_ID" ]]; then
-            log_error "--cf-token and --cf-account-id are required when using --wildcard."
+        if [[ -z "$CF_TOKEN" ]]; then
+            log_error "--cf-token is required when using --wildcard."
+            exit 1
+        fi
+        if [[ -z "$CF_ACCOUNT_ID" && -z "$CF_ZONE_ID" ]]; then
+            log_error "--cf-account-id or --cf-zone-id is required when using --wildcard."
             exit 1
         fi
     fi
@@ -215,6 +227,17 @@ issue_certificates() {
     else
         issue_standalone_certs
     fi
+
+    if [[ ! -s "${CERT_DIR}/key.pem" || ! -s "${CERT_DIR}/fullchain.pem" ]]; then
+        log_error "Certificates were NOT installed to ${CERT_DIR}."
+        log_error "key.pem and/or fullchain.pem are missing or empty."
+        log_error "Fix the certificate issue before continuing."
+        exit 1
+    fi
+
+    log_info "Certificates installed successfully:"
+    log_info "  Key : ${CERT_DIR}/key.pem ($(wc -c < "${CERT_DIR}/key.pem") bytes)"
+    log_info "  Cert: ${CERT_DIR}/fullchain.pem ($(wc -c < "${CERT_DIR}/fullchain.pem") bytes)"
 }
 
 issue_standalone_certs() {
@@ -242,12 +265,18 @@ issue_wildcard_cert() {
     log_info "Issuing wildcard certificate for *.${base_domain} via Cloudflare DNS-01"
 
     export CF_Token="$CF_TOKEN"
-    export CF_Account_ID="$CF_ACCOUNT_ID"
+    [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
+    [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
 
-    "$ACME_HOME/acme.sh" --issue --dns dns_cf \
+    if ! "$ACME_HOME/acme.sh" --issue --dns dns_cf \
         -d "${base_domain}" \
         -d "*.${base_domain}" \
-        --force || true
+        --force --log; then
+        log_error "Failed to issue wildcard cert. Check CF token/zone permissions."
+        log_error "See log: ${ACME_HOME}/acme.sh.log"
+        log_error "Hint: try --cf-zone-id instead of --cf-account-id"
+        return 1
+    fi
 
     log_info "Installing wildcard certificate to ${CERT_DIR}"
     "$ACME_HOME/acme.sh" --install-cert -d "${base_domain}" \
@@ -258,7 +287,7 @@ issue_wildcard_cert() {
     log_info "Issuing certificate for ${SELF_STEAL_DOMAIN} via Cloudflare DNS-01"
     "$ACME_HOME/acme.sh" --issue --dns dns_cf \
         -d "$SELF_STEAL_DOMAIN" \
-        --force || true
+        --force --log || log_warn "SS cert issue failed, continuing..."
 }
 
 # ─── Install nginx from official repo ──────────────────────────────────────
