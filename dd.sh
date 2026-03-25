@@ -254,17 +254,18 @@ issue_certificates() {
     mkdir -p "$CERT_DIR"
 
     if [[ "$WILDCARD" == true ]]; then
-        issue_wildcard_cert
+        issue_wildcard_cert || true
     else
-        issue_standalone_certs
+        issue_standalone_certs || true
     fi
 
-    if [[ -s "$ACME_DM_KEY" && -s "$ACME_DM_FC" ]]; then
+    if cert_is_valid "$ACME_DM_FC"; then
         log_info "Certificates OK:"
         log_info "  Key : ${ACME_DM_KEY}"
         log_info "  Cert: ${ACME_DM_FC}"
     else
-        log_error "Certificates are missing after issuance."
+        log_error "No valid certificates found after issuance attempt."
+        log_error "If rate-limited, wait until the retry time shown above."
         log_error "Check acme.sh log: ${ACME_HOME}/acme.sh.log"
         exit 1
     fi
@@ -275,16 +276,22 @@ issue_standalone_certs() {
         log_info "Dashboard cert already valid, skipping issue"
     else
         log_info "Issuing standalone certificate for ${DASH_DOMAIN}"
-        "$ACME_HOME/acme.sh" --issue --standalone \
-            -d "$DASH_DOMAIN" || true
+        local rc=0
+        "$ACME_HOME/acme.sh" --issue --standalone -d "$DASH_DOMAIN" || rc=$?
+        if [[ $rc -ne 0 ]] && cert_is_valid "$ACME_DM_FC"; then
+            log_warn "acme.sh returned ${rc} for dash cert, but valid cert exists — continuing"
+        fi
     fi
 
     if cert_is_valid "$ACME_SS_FC"; then
         log_info "SS cert already valid, skipping issue"
     else
         log_info "Issuing standalone certificate for ${SELF_STEAL_DOMAIN}"
-        "$ACME_HOME/acme.sh" --issue --standalone \
-            -d "$SELF_STEAL_DOMAIN" || true
+        local rc=0
+        "$ACME_HOME/acme.sh" --issue --standalone -d "$SELF_STEAL_DOMAIN" || rc=$?
+        if [[ $rc -ne 0 ]] && cert_is_valid "$ACME_SS_FC"; then
+            log_warn "acme.sh returned ${rc} for SS cert, but valid cert exists — continuing"
+        fi
     fi
 }
 
@@ -402,15 +409,22 @@ issue_wildcard_cert() {
 
     local wild_cert="${ACME_HOME}/${base_domain}_ecc/fullchain.cer"
     if cert_is_valid "$wild_cert"; then
-        log_info "Wildcard cert already valid, skipping issue"
+        log_info "Wildcard cert already valid (not expired), skipping issue"
     else
-        if ! "$ACME_HOME/acme.sh" --issue --dns dns_cf \
+        local rc=0
+        "$ACME_HOME/acme.sh" --issue --dns dns_cf \
             -d "${base_domain}" \
             -d "*.${base_domain}" \
-            --log; then
-            log_error "Failed to issue wildcard cert."
-            log_error "See log: ${ACME_HOME}/acme.sh.log"
-            return 1
+            --log || rc=$?
+
+        if [[ $rc -ne 0 ]]; then
+            if cert_is_valid "$wild_cert"; then
+                log_warn "acme.sh exited with code ${rc}, but valid cert already exists — continuing"
+            else
+                log_error "Failed to issue wildcard cert (exit code ${rc})."
+                log_error "See log: ${ACME_HOME}/acme.sh.log"
+                return 1
+            fi
         fi
     fi
 
