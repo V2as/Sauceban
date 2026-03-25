@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DD_VERSION="2.4.0-20260325"
+
 # ============================================================================
 #  Marzban deploy helper — nginx + haproxy + acme.sh + WARP + sysctl tuning
 #  Supports wildcard certificates via Cloudflare DNS-01 challenge
@@ -415,6 +417,7 @@ issue_wildcard_cert() {
         "$ACME_HOME/acme.sh" --issue --dns dns_cf \
             -d "${base_domain}" \
             -d "*.${base_domain}" \
+            -d "${DASH_DOMAIN}" \
             --log || rc=$?
 
         if [[ $rc -ne 0 ]]; then
@@ -854,7 +857,7 @@ main() {
     parse_args "$@"
     require_root
 
-    log_step "Starting deployment"
+    log_step "Starting deployment (dd.sh v${DD_VERSION})"
     log_info "Dashboard domain : ${DASH_DOMAIN}"
     log_info "Self-steal domain: ${SELF_STEAL_DOMAIN}"
     log_info "Wildcard mode    : ${WILDCARD}"
