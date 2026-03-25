@@ -265,6 +265,14 @@ fix_certificates() {
             return 0
         fi
 
+        local acme_conf="${ACME_HOME}/account.conf"
+        if [[ -f "$acme_conf" ]]; then
+            sed -i '/^SAVED_CF_Token=/d; /^SAVED_CF_Account_ID=/d; /^SAVED_CF_Zone_ID=/d' "$acme_conf"
+            echo "SAVED_CF_Token='${CF_TOKEN}'" >> "$acme_conf"
+            [[ -n "$CF_ACCOUNT_ID" ]] && echo "SAVED_CF_Account_ID='${CF_ACCOUNT_ID}'" >> "$acme_conf"
+            [[ -n "$CF_ZONE_ID" ]]    && echo "SAVED_CF_Zone_ID='${CF_ZONE_ID}'" >> "$acme_conf"
+        fi
+
         export CF_Token="$CF_TOKEN"
         [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
         [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
