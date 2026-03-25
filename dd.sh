@@ -258,11 +258,75 @@ issue_standalone_certs() {
         --force || true
 }
 
+verify_cloudflare_api() {
+    log_info "Verifying Cloudflare API access..."
+
+    local token_check
+    token_check=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+        -H "Authorization: Bearer ${CF_TOKEN}" \
+        -H "Content-Type: application/json")
+
+    local token_status
+    token_status=$(echo "$token_check" | jq -r '.success // false')
+
+    if [[ "$token_status" != "true" ]]; then
+        log_error "Cloudflare API token is INVALID or expired."
+        log_error "API response: $(echo "$token_check" | jq -r '.errors[0].message // .errors // "unknown"')"
+        log_error "Token length: ${#CF_TOKEN} chars (expected: 40)"
+        return 1
+    fi
+    log_ok "Token is valid: $(echo "$token_check" | jq -r '.result.status')"
+
+    if [[ -n "$CF_ZONE_ID" ]]; then
+        local zone_check
+        zone_check=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}" \
+            -H "Authorization: Bearer ${CF_TOKEN}" \
+            -H "Content-Type: application/json")
+
+        local zone_success
+        zone_success=$(echo "$zone_check" | jq -r '.success // false')
+
+        if [[ "$zone_success" != "true" ]]; then
+            log_error "Cannot access Zone ID ${CF_ZONE_ID}"
+            log_error "API response: $(echo "$zone_check" | jq -r '.errors[0].message // .errors // "unknown"')"
+            log_error "Check that the token has Zone:Read + DNS:Edit permissions for this zone."
+            return 1
+        fi
+
+        local zone_name
+        zone_name=$(echo "$zone_check" | jq -r '.result.name')
+        log_ok "Zone access confirmed: ${zone_name} (${CF_ZONE_ID})"
+    fi
+
+    local dns_test
+    dns_test=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=TXT&name=_acme-test.${1}" \
+        -H "Authorization: Bearer ${CF_TOKEN}" \
+        -H "Content-Type: application/json")
+
+    local dns_success
+    dns_success=$(echo "$dns_test" | jq -r '.success // false')
+    if [[ "$dns_success" == "true" ]]; then
+        log_ok "DNS read access confirmed"
+    else
+        log_error "Cannot read DNS records for zone."
+        log_error "API response: $(echo "$dns_test" | jq -r '.errors[0].message // .errors // "unknown"')"
+        log_error "Token needs: Zone:DNS:Edit and Zone:Zone:Read permissions."
+        return 1
+    fi
+
+    return 0
+}
+
 issue_wildcard_cert() {
     local base_domain
     base_domain=$(echo "$DASH_DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
 
     log_info "Issuing wildcard certificate for *.${base_domain} via Cloudflare DNS-01"
+
+    if ! verify_cloudflare_api "$base_domain"; then
+        log_error "Cloudflare API verification failed. Cannot issue wildcard certificate."
+        exit 1
+    fi
 
     local acme_conf="${ACME_HOME}/account.conf"
     if [[ -f "$acme_conf" ]]; then
