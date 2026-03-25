@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DD_VERSION="2.4.0-20260325"
+DD_VERSION="2.5.0-20260325"
 
 # ============================================================================
 #  Marzban deploy helper — nginx + haproxy + acme.sh + WARP + sysctl tuning
@@ -412,17 +412,33 @@ issue_wildcard_cert() {
     local wild_cert="${ACME_HOME}/${base_domain}_ecc/fullchain.cer"
     if cert_is_valid "$wild_cert"; then
         log_info "Wildcard cert already valid (not expired), skipping issue"
-    else
-        local rc=0
-        "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-            -d "${base_domain}" \
-            -d "*.${base_domain}" \
-            -d "${DASH_DOMAIN}" \
-            --log || rc=$?
+        log_info "Wildcard cert covers both ${DASH_DOMAIN} and ${SELF_STEAL_DOMAIN}"
+        return 0
+    fi
+
+    local rc=0
+    "$ACME_HOME/acme.sh" --issue --dns dns_cf \
+        -d "${base_domain}" \
+        -d "*.${base_domain}" \
+        --log 2>&1 || rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        local acme_log="${ACME_HOME}/acme.sh.log"
+        if grep -q "rateLimited" "$acme_log" 2>/dev/null; then
+            log_warn "Let's Encrypt rate limit hit — switching to ZeroSSL"
+            "$ACME_HOME/acme.sh" --register-account --server zerossl -m "$ACME_EMAIL" || true
+
+            rc=0
+            "$ACME_HOME/acme.sh" --issue --dns dns_cf \
+                -d "${base_domain}" \
+                -d "*.${base_domain}" \
+                --server zerossl \
+                --force --log 2>&1 || rc=$?
+        fi
 
         if [[ $rc -ne 0 ]]; then
             if cert_is_valid "$wild_cert"; then
-                log_warn "acme.sh exited with code ${rc}, but valid cert already exists — continuing"
+                log_warn "Issue failed (code ${rc}), but valid cert exists — continuing"
             else
                 log_error "Failed to issue wildcard cert (exit code ${rc})."
                 log_error "See log: ${ACME_HOME}/acme.sh.log"
