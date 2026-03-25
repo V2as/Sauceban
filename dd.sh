@@ -677,12 +677,12 @@ configure_marzban_env() {
     env_set "SUB_PROFILE_TITLE"         "\"BLACKTEMPLE VPN BR\""
     env_set "SUB_UPDATE_INTERVAL"       "\"2\""
     env_set "XRAY_SUBSCRIPTION_URL_PREFIX" "\"https://${DASH_DOMAIN}\""
-    env_set "UVICORN_SSL_KEYFILE"       "\"${CERT_DIR}/key.pem\""
-    env_set "UVICORN_SSL_CERTFILE"      "\"${CERT_DIR}/fullchain.pem\""
+    env_set "UVICORN_SSL_KEYFILE"       "\"${ACME_DM_KEY}\""
+    env_set "UVICORN_SSL_CERTFILE"      "\"${ACME_DM_FC}\""
 
     log_info "Marzban .env updated"
-    log_info "  UVICORN_SSL_KEYFILE  = ${CERT_DIR}/key.pem"
-    log_info "  UVICORN_SSL_CERTFILE = ${CERT_DIR}/fullchain.pem"
+    log_info "  UVICORN_SSL_KEYFILE  = ${ACME_DM_KEY}"
+    log_info "  UVICORN_SSL_CERTFILE = ${ACME_DM_FC}"
 }
 
 # ─── Add ACME volume to docker-compose ─────────────────────────────────────

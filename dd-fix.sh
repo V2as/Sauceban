@@ -2,9 +2,8 @@
 set -euo pipefail
 
 # ============================================================================
-#  Marzban repair tool — diagnoses and fixes broken dd.sh installations
-#  Checks: certificates, .env, nginx, haproxy, docker-compose volumes
-#  Non-interactive, automation-friendly
+#  Marzban repair tool — auto-detects and fixes broken dd.sh installations
+#  Run without arguments for automatic detection, or pass args to override
 # ============================================================================
 
 export DEBIAN_FRONTEND=noninteractive
@@ -22,6 +21,8 @@ UVICORN_PORT="10000"
 REALITY_PORT="12000"
 
 CF_TOKEN=""
+CF_KEY=""
+CF_EMAIL=""
 CF_ACCOUNT_ID=""
 CF_ZONE_ID=""
 DASH_DOMAIN=""
@@ -35,33 +36,32 @@ FIXED=0
 # ─── Colored output ────────────────────────────────────────────────────────
 
 log_info()  { printf '\e[92m[INFO]\e[0m  %s\n' "$*"; }
+log_ok()    { printf '\e[92m[OK]\e[0m    %s\n' "$*"; }
 log_warn()  { printf '\e[93m[WARN]\e[0m  %s\n' "$*"; }
 log_error() { printf '\e[91m[ERROR]\e[0m %s\n' "$*"; }
 log_fix()   { printf '\e[95m[FIX]\e[0m   %s\n' "$*"; }
-log_ok()    { printf '\e[92m[OK]\e[0m    %s\n' "$*"; }
 log_step()  { printf '\n\e[96m══ %s ══\e[0m\n' "$*"; }
+log_detect(){ printf '\e[94m[AUTO]\e[0m  %s\n' "$*"; }
 
 # ─── Usage ──────────────────────────────────────────────────────────────────
 
 usage() {
     cat <<'USAGE'
 Usage:
-  dd-fix.sh --dash-domain <domain> --ss-domain <domain> [OPTIONS]
+  dd-fix.sh [OPTIONS]
 
-Diagnoses and repairs a broken Marzban installation after dd.sh.
-Checks .env, certificates, nginx, haproxy, docker-compose volumes.
+Auto-detects and repairs a broken Marzban installation.
+When run without arguments, reads config from .env, nginx, haproxy, acme.sh.
 
-Required:
-  --dash-domain   <domain>   Dashboard / subscription domain
-  --ss-domain     <domain>   Self-steal (camouflage) domain
-
-Cloudflare (needed to re-issue wildcard certs if missing):
-  --cf-token      <token>    Cloudflare API token
-  --cf-account-id <id>       Cloudflare Account ID (use this OR --cf-zone-id)
-  --cf-zone-id    <id>       Cloudflare Zone ID (more reliable for scoped tokens)
-  --wildcard                 Expect wildcard certificate
-
-Optional:
+All arguments are optional (auto-detected if omitted):
+  --dash-domain   <domain>   Override dashboard domain
+  --ss-domain     <domain>   Override self-steal domain
+  --wildcard                 Force wildcard mode
+  --cf-key        <key>      Cloudflare Global API Key
+  --cf-email      <email>    Cloudflare account email
+  --cf-token      <token>    Cloudflare API Token
+  --cf-account-id <id>       Cloudflare Account ID
+  --cf-zone-id    <id>       Cloudflare Zone ID
   --marzban-dir   <path>     Marzban directory (default: /opt/marzban)
   --uvicorn-port  <port>     Uvicorn port (default: 10000)
   --reality-port  <port>     Reality backend port (default: 12000)
@@ -69,12 +69,9 @@ Optional:
   -h, --help                 Show this help
 
 Examples:
-  dd-fix.sh --dash-domain panel.example.com --ss-domain cover.example.com
-
-  dd-fix.sh --dash-domain panel.example.com --ss-domain cover.example.com \
-            --cf-token "token" --cf-account-id "id" --wildcard
-
-  dd-fix.sh --dash-domain panel.example.com --ss-domain cover.example.com --dry-run
+  dd-fix.sh                  # auto-detect everything and fix
+  dd-fix.sh --dry-run        # auto-detect, show issues, don't fix
+  dd-fix.sh --dash-domain panel.example.com  # override one value
 USAGE
     exit 0
 }
@@ -87,6 +84,8 @@ parse_args() {
             --dash-domain)    DASH_DOMAIN="$2";       shift 2 ;;
             --ss-domain)      SELF_STEAL_DOMAIN="$2"; shift 2 ;;
             --cf-token)       CF_TOKEN="$2";          shift 2 ;;
+            --cf-key)         CF_KEY="$2";            shift 2 ;;
+            --cf-email)       CF_EMAIL="$2";          shift 2 ;;
             --cf-account-id)  CF_ACCOUNT_ID="$2";     shift 2 ;;
             --cf-zone-id)     CF_ZONE_ID="$2";        shift 2 ;;
             --marzban-dir)    MARZBAN_DIR="$2";       shift 2 ;;
@@ -102,20 +101,139 @@ parse_args() {
         esac
     done
 
-    if [[ -z "$DASH_DOMAIN" || -z "$SELF_STEAL_DOMAIN" ]]; then
-        log_error "--dash-domain and --ss-domain are required."
-        usage
-    fi
-
     MARZBAN_ENV="${MARZBAN_DIR}/.env"
     MARZBAN_COMPOSE="${MARZBAN_DIR}/docker-compose.yml"
+}
 
+# ─── Auto-detection ────────────────────────────────────────────────────────
+
+auto_detect() {
+    log_step "Auto-detecting configuration"
+
+    # Dash domain from .env
+    if [[ -z "$DASH_DOMAIN" && -f "$MARZBAN_ENV" ]]; then
+        local sub_url
+        sub_url=$(grep -E '^\s*XRAY_SUBSCRIPTION_URL_PREFIX\s*=' "$MARZBAN_ENV" 2>/dev/null \
+            | head -1 | sed 's/.*=\s*//' | sed 's/^"//;s/"$//' | sed "s/^'//;s/'$//" | xargs)
+        if [[ -n "$sub_url" ]]; then
+            DASH_DOMAIN=$(echo "$sub_url" | sed 's|https\?://||' | sed 's|/.*||')
+            log_detect "Dashboard domain from .env: ${DASH_DOMAIN}"
+        fi
+    fi
+
+    # Dash domain from haproxy
+    if [[ -z "$DASH_DOMAIN" && -f "$HAPROXY_CFG" ]]; then
+        DASH_DOMAIN=$(grep -oP 'req\.ssl_sni\s+-i\s+end\s+\K\S+' "$HAPROXY_CFG" 2>/dev/null | head -1)
+        if [[ -n "$DASH_DOMAIN" ]]; then
+            log_detect "Dashboard domain from haproxy: ${DASH_DOMAIN}"
+        fi
+    fi
+
+    # SS domain from nginx
+    if [[ -z "$SELF_STEAL_DOMAIN" && -f "$NGINX_CFG" ]]; then
+        SELF_STEAL_DOMAIN=$(grep -oP 'server_name\s+\K[^;_\s]+' "$NGINX_CFG" 2>/dev/null \
+            | grep -v '^_$' | head -1)
+        if [[ -n "$SELF_STEAL_DOMAIN" ]]; then
+            log_detect "SS domain from nginx: ${SELF_STEAL_DOMAIN}"
+        fi
+    fi
+
+    # SS domain from acme.sh directories
+    if [[ -z "$SELF_STEAL_DOMAIN" && -n "$DASH_DOMAIN" ]]; then
+        local base
+        base=$(echo "$DASH_DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
+        for dir in "${ACME_HOME}"/*_ecc; do
+            local name
+            name=$(basename "$dir" | sed 's/_ecc$//')
+            if [[ "$name" != "$base" && "$name" != "$DASH_DOMAIN" && "$name" == *"${base}" ]]; then
+                SELF_STEAL_DOMAIN="$name"
+                log_detect "SS domain from acme.sh: ${SELF_STEAL_DOMAIN}"
+                break
+            fi
+        done
+    fi
+
+    # Wildcard detection from acme.sh
+    if [[ "$WILDCARD" == false && -n "$DASH_DOMAIN" ]]; then
+        local base
+        base=$(echo "$DASH_DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
+        if [[ -d "${ACME_HOME}/${base}_ecc" && ! -d "${ACME_HOME}/${DASH_DOMAIN}_ecc" ]]; then
+            WILDCARD=true
+            log_detect "Wildcard mode detected (found ${base}_ecc, no ${DASH_DOMAIN}_ecc)"
+        fi
+    fi
+
+    # UVICORN_PORT from .env
+    if [[ -f "$MARZBAN_ENV" ]]; then
+        local port
+        port=$(grep -E '^\s*UVICORN_PORT\s*=' "$MARZBAN_ENV" 2>/dev/null \
+            | head -1 | sed 's/.*=\s*//' | sed 's/^"//;s/"$//' | xargs)
+        if [[ -n "$port" ]]; then
+            UVICORN_PORT="$port"
+            log_detect "Uvicorn port from .env: ${UVICORN_PORT}"
+        fi
+    fi
+
+    # REALITY_PORT from haproxy
+    if [[ -f "$HAPROXY_CFG" ]]; then
+        local rport
+        rport=$(grep -A1 'backend reality' "$HAPROXY_CFG" 2>/dev/null \
+            | grep -oP '127\.0\.0\.1:\K\d+' | head -1)
+        if [[ -n "$rport" ]]; then
+            REALITY_PORT="$rport"
+            log_detect "Reality port from haproxy: ${REALITY_PORT}"
+        fi
+    fi
+
+    # CF credentials from acme.sh account.conf
+    local acme_conf="${ACME_HOME}/account.conf"
+    if [[ -f "$acme_conf" ]]; then
+        if [[ -z "$CF_KEY" ]]; then
+            CF_KEY=$(grep -oP "^SAVED_CF_Key='\K[^']+" "$acme_conf" 2>/dev/null || true)
+            [[ -n "$CF_KEY" ]] && log_detect "CF Key from account.conf"
+        fi
+        if [[ -z "$CF_EMAIL" ]]; then
+            CF_EMAIL=$(grep -oP "^SAVED_CF_Email='\K[^']+" "$acme_conf" 2>/dev/null || true)
+            [[ -n "$CF_EMAIL" ]] && log_detect "CF Email from account.conf"
+        fi
+        if [[ -z "$CF_TOKEN" ]]; then
+            CF_TOKEN=$(grep -oP "^SAVED_CF_Token='\K[^']+" "$acme_conf" 2>/dev/null || true)
+            [[ -n "$CF_TOKEN" ]] && log_detect "CF Token from account.conf"
+        fi
+        if [[ -z "$CF_ACCOUNT_ID" ]]; then
+            CF_ACCOUNT_ID=$(grep -oP "^SAVED_CF_Account_ID='\K[^']+" "$acme_conf" 2>/dev/null || true)
+            [[ -n "$CF_ACCOUNT_ID" ]] && log_detect "CF Account ID from account.conf"
+        fi
+        if [[ -z "$CF_ZONE_ID" ]]; then
+            CF_ZONE_ID=$(grep -oP "^SAVED_CF_Zone_ID='\K[^']+" "$acme_conf" 2>/dev/null || true)
+            [[ -n "$CF_ZONE_ID" ]] && log_detect "CF Zone ID from account.conf"
+        fi
+    fi
+
+    # Validate minimum required detection
+    if [[ -z "$DASH_DOMAIN" ]]; then
+        log_error "Could not detect dashboard domain. Pass --dash-domain manually."
+        exit 1
+    fi
+    if [[ -z "$SELF_STEAL_DOMAIN" ]]; then
+        log_error "Could not detect SS domain. Pass --ss-domain manually."
+        exit 1
+    fi
+}
+
+# ─── Compute derived paths ─────────────────────────────────────────────────
+
+compute_paths() {
     if [[ "$WILDCARD" == true ]]; then
         BASE_DOMAIN=$(echo "$DASH_DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
         ACME_DASH_DIR="${ACME_HOME}/${BASE_DOMAIN}_ecc"
+        ACME_DM_FC="${ACME_DASH_DIR}/fullchain.cer"
+        ACME_DM_KEY="${ACME_DASH_DIR}/${BASE_DOMAIN}.key"
     else
         BASE_DOMAIN=""
         ACME_DASH_DIR="${ACME_HOME}/${DASH_DOMAIN}_ecc"
+        ACME_DM_FC="${ACME_DASH_DIR}/fullchain.cer"
+        ACME_DM_KEY="${ACME_DASH_DIR}/${DASH_DOMAIN}.key"
     fi
     ACME_SS_DIR="${ACME_HOME}/${SELF_STEAL_DOMAIN}_ecc"
 }
@@ -192,36 +310,33 @@ fix_env_value() {
 check_certificates() {
     log_step "Checking certificates"
 
-    local key_file="${CERT_DIR}/key.pem"
-    local cert_file="${CERT_DIR}/fullchain.pem"
-
-    if [[ -f "$key_file" && -s "$key_file" ]]; then
-        log_ok "Key file exists: ${key_file}"
-    else
-        ERRORS=$((ERRORS + 1))
-        log_error "Key file MISSING or empty: ${key_file}"
-    fi
-
-    if [[ -f "$cert_file" && -s "$cert_file" ]]; then
-        log_ok "Cert file exists: ${cert_file}"
-        local expiry
-        expiry=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | cut -d= -f2)
-        if [[ -n "$expiry" ]]; then
-            log_info "  Expires: ${expiry}"
-            if openssl x509 -checkend 86400 -noout -in "$cert_file" 2>/dev/null; then
-                log_ok "  Certificate is valid (not expiring within 24h)"
-            else
-                ERRORS=$((ERRORS + 1))
-                log_error "  Certificate is EXPIRED or expiring within 24h"
-            fi
-        fi
-    else
-        ERRORS=$((ERRORS + 1))
-        log_error "Cert file MISSING or empty: ${cert_file}"
-    fi
-
     if [[ -d "$ACME_DASH_DIR" ]]; then
         log_ok "ACME directory exists: ${ACME_DASH_DIR}"
+
+        if [[ -f "$ACME_DM_KEY" && -s "$ACME_DM_KEY" ]]; then
+            log_ok "Key file exists: ${ACME_DM_KEY}"
+        else
+            ERRORS=$((ERRORS + 1))
+            log_error "Key file MISSING or empty: ${ACME_DM_KEY}"
+        fi
+
+        if [[ -f "$ACME_DM_FC" && -s "$ACME_DM_FC" ]]; then
+            log_ok "Cert file exists: ${ACME_DM_FC}"
+            local expiry
+            expiry=$(openssl x509 -enddate -noout -in "$ACME_DM_FC" 2>/dev/null | cut -d= -f2)
+            if [[ -n "$expiry" ]]; then
+                log_info "  Expires: ${expiry}"
+                if openssl x509 -checkend 86400 -noout -in "$ACME_DM_FC" 2>/dev/null; then
+                    log_ok "  Certificate is valid (not expiring within 24h)"
+                else
+                    ERRORS=$((ERRORS + 1))
+                    log_error "  Certificate is EXPIRED or expiring within 24h"
+                fi
+            fi
+        else
+            ERRORS=$((ERRORS + 1))
+            log_error "Cert file MISSING or empty: ${ACME_DM_FC}"
+        fi
     else
         ERRORS=$((ERRORS + 1))
         log_error "ACME directory MISSING: ${ACME_DASH_DIR}"
@@ -238,121 +353,29 @@ check_certificates() {
 fix_certificates() {
     log_step "Fixing certificates"
 
-    local key_file="${CERT_DIR}/key.pem"
-    local cert_file="${CERT_DIR}/fullchain.pem"
-
-    if [[ -f "$key_file" && -s "$key_file" && -f "$cert_file" && -s "$cert_file" ]]; then
-        if openssl x509 -checkend 86400 -noout -in "$cert_file" 2>/dev/null; then
+    if [[ -f "$ACME_DM_KEY" && -s "$ACME_DM_KEY" && -f "$ACME_DM_FC" && -s "$ACME_DM_FC" ]]; then
+        if openssl x509 -checkend 86400 -noout -in "$ACME_DM_FC" 2>/dev/null; then
             log_info "Certificates are OK, skipping re-issue"
             return 0
         fi
     fi
 
-    mkdir -p "$CERT_DIR"
-
-    if [[ "$WILDCARD" == true ]]; then
-        if [[ -z "$CF_TOKEN" ]]; then
-            log_error "Cannot re-issue wildcard cert: --cf-token required"
-            return 1
-        fi
-        if [[ -z "$CF_ACCOUNT_ID" && -z "$CF_ZONE_ID" ]]; then
-            log_error "Cannot re-issue wildcard cert: --cf-account-id or --cf-zone-id required"
-            return 1
-        fi
-
+    if [[ -d "$ACME_DASH_DIR" ]]; then
+        log_info "ACME directory exists but certs are broken/expired — try renew"
         if [[ "$DRY_RUN" == true ]]; then
-            log_fix "[dry-run] Would re-issue wildcard cert for *.${BASE_DOMAIN} and install to ${CERT_DIR}"
+            log_fix "[dry-run] Would renew certificate"
             return 0
         fi
-
-        local acme_conf="${ACME_HOME}/account.conf"
-        if [[ -f "$acme_conf" ]]; then
-            sed -i '/^SAVED_CF_Token=/d; /^SAVED_CF_Account_ID=/d; /^SAVED_CF_Zone_ID=/d' "$acme_conf"
-            echo "SAVED_CF_Token='${CF_TOKEN}'" >> "$acme_conf"
-            [[ -n "$CF_ACCOUNT_ID" ]] && echo "SAVED_CF_Account_ID='${CF_ACCOUNT_ID}'" >> "$acme_conf"
-            [[ -n "$CF_ZONE_ID" ]]    && echo "SAVED_CF_Zone_ID='${CF_ZONE_ID}'" >> "$acme_conf"
-        fi
-
-        export CF_Token="$CF_TOKEN"
-        [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
-        [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
-
-        log_fix "Re-issuing wildcard cert for *.${BASE_DOMAIN}"
-        if ! "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-            -d "${BASE_DOMAIN}" \
-            -d "*.${BASE_DOMAIN}" \
-            --force --log; then
-            log_error "Wildcard cert issue failed. Check CF token/zone. Log: ${ACME_HOME}/acme.sh.log"
-            return 1
-        fi
-
-        local reload_cmd=""
-        command -v nginx &>/dev/null && reload_cmd="systemctl reload nginx"
-
-        "$ACME_HOME/acme.sh" --install-cert -d "${BASE_DOMAIN}" \
-            --key-file "${CERT_DIR}/key.pem" \
-            --fullchain-file "${CERT_DIR}/fullchain.pem" \
-            ${reload_cmd:+--reloadcmd "$reload_cmd"} || true
-
+        "$ACME_HOME/acme.sh" --renew -d "${WILDCARD:+${BASE_DOMAIN:-$DASH_DOMAIN}}" \
+            ${WILDCARD:+-d "*.${BASE_DOMAIN}"} --force || true
         FIXED=$((FIXED + 1))
     else
-        if [[ -d "$ACME_DASH_DIR" ]]; then
-            if [[ "$DRY_RUN" == true ]]; then
-                log_fix "[dry-run] Would re-install cert from ${ACME_DASH_DIR} to ${CERT_DIR}"
-                return 0
-            fi
-
-            log_fix "Re-installing cert from acme.sh to ${CERT_DIR}"
-            local reload_cmd=""
-            command -v nginx &>/dev/null && reload_cmd="systemctl reload nginx"
-
-            "$ACME_HOME/acme.sh" --install-cert -d "$DASH_DOMAIN" \
-                --key-file "${CERT_DIR}/key.pem" \
-                --fullchain-file "${CERT_DIR}/fullchain.pem" \
-                ${reload_cmd:+--reloadcmd "$reload_cmd"} || true
-
-            FIXED=$((FIXED + 1))
-        else
-            if [[ "$DRY_RUN" == true ]]; then
-                log_fix "[dry-run] Would re-issue standalone cert for ${DASH_DOMAIN}"
-                return 0
-            fi
-
-            log_fix "Re-issuing standalone cert for ${DASH_DOMAIN}"
-            "$ACME_HOME/acme.sh" --issue --standalone \
-                -d "$DASH_DOMAIN" --force || true
-
-            local reload_cmd=""
-            command -v nginx &>/dev/null && reload_cmd="systemctl reload nginx"
-
-            "$ACME_HOME/acme.sh" --install-cert -d "$DASH_DOMAIN" \
-                --key-file "${CERT_DIR}/key.pem" \
-                --fullchain-file "${CERT_DIR}/fullchain.pem" \
-                ${reload_cmd:+--reloadcmd "$reload_cmd"} || true
-
-            FIXED=$((FIXED + 1))
-        fi
+        log_warn "ACME directory missing — cannot fix certs automatically"
+        log_warn "Re-run dd.sh to issue new certificates"
     fi
 
     if [[ ! -d "$ACME_SS_DIR" ]]; then
-        if [[ "$DRY_RUN" == true ]]; then
-            log_fix "[dry-run] Would re-issue cert for ${SELF_STEAL_DOMAIN}"
-            return 0
-        fi
-
-        if [[ "$WILDCARD" == true && -n "$CF_TOKEN" ]]; then
-            export CF_Token="$CF_TOKEN"
-            [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
-            [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
-            log_fix "Re-issuing SS cert for ${SELF_STEAL_DOMAIN} via DNS-01"
-            "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-                -d "$SELF_STEAL_DOMAIN" --force --log || true
-        else
-            log_fix "Re-issuing SS cert for ${SELF_STEAL_DOMAIN} via standalone"
-            "$ACME_HOME/acme.sh" --issue --standalone \
-                -d "$SELF_STEAL_DOMAIN" --force || true
-        fi
-        FIXED=$((FIXED + 1))
+        log_warn "SS cert directory missing — re-run dd.sh to issue"
     fi
 }
 
@@ -372,8 +395,8 @@ check_env() {
     local need_fix=false
 
     check_env_value "UVICORN_PORT"              "$UVICORN_PORT"                "UVICORN_PORT"              || need_fix=true
-    check_env_value "UVICORN_SSL_KEYFILE"       "${CERT_DIR}/key.pem"          "UVICORN_SSL_KEYFILE"       || need_fix=true
-    check_env_value "UVICORN_SSL_CERTFILE"      "${CERT_DIR}/fullchain.pem"    "UVICORN_SSL_CERTFILE"      || need_fix=true
+    check_env_value "UVICORN_SSL_KEYFILE"       "${ACME_DM_KEY}"               "UVICORN_SSL_KEYFILE"       || need_fix=true
+    check_env_value "UVICORN_SSL_CERTFILE"      "${ACME_DM_FC}"                "UVICORN_SSL_CERTFILE"      || need_fix=true
     check_env_value "XRAY_SUBSCRIPTION_URL_PREFIX" "https://${DASH_DOMAIN}"    "XRAY_SUBSCRIPTION_URL_PREFIX" || need_fix=true
 
     if [[ "$need_fix" == true ]]; then
@@ -401,10 +424,10 @@ fix_env() {
     [[ "$current" != "$UVICORN_PORT" ]] && fix_env_value "UVICORN_PORT" "$UVICORN_PORT" "UVICORN_PORT"
 
     current=$(env_get "UVICORN_SSL_KEYFILE")
-    [[ "$current" != "${CERT_DIR}/key.pem" ]] && fix_env_value "UVICORN_SSL_KEYFILE" "${CERT_DIR}/key.pem" "UVICORN_SSL_KEYFILE"
+    [[ "$current" != "${ACME_DM_KEY}" ]] && fix_env_value "UVICORN_SSL_KEYFILE" "${ACME_DM_KEY}" "UVICORN_SSL_KEYFILE"
 
     current=$(env_get "UVICORN_SSL_CERTFILE")
-    [[ "$current" != "${CERT_DIR}/fullchain.pem" ]] && fix_env_value "UVICORN_SSL_CERTFILE" "${CERT_DIR}/fullchain.pem" "UVICORN_SSL_CERTFILE"
+    [[ "$current" != "${ACME_DM_FC}" ]] && fix_env_value "UVICORN_SSL_CERTFILE" "${ACME_DM_FC}" "UVICORN_SSL_CERTFILE"
 
     current=$(env_get "XRAY_SUBSCRIPTION_URL_PREFIX")
     [[ "$current" != "https://${DASH_DOMAIN}" ]] && fix_env_value "XRAY_SUBSCRIPTION_URL_PREFIX" "https://${DASH_DOMAIN}" "XRAY_SUBSCRIPTION_URL_PREFIX"
@@ -784,9 +807,6 @@ fix_compose_volumes() {
         return 0
     fi
 
-    # Remove stale acme.sh volume entries that point to wrong paths
-    sed -i "\|${ACME_HOME}/.*_ecc:${ACME_HOME}/.*_ecc|d" "$MARZBAN_COMPOSE"
-
     if command -v yq &>/dev/null; then
         yq eval ".services.marzban.volumes += [\"${volume_entry}\"]" -i "$MARZBAN_COMPOSE"
     else
@@ -827,6 +847,8 @@ restart_services() {
 main() {
     parse_args "$@"
     require_root
+    auto_detect
+    compute_paths
 
     log_step "Marzban Repair Tool"
     log_info "Dashboard domain : ${DASH_DOMAIN}"
@@ -838,7 +860,8 @@ main() {
     fi
     log_info "ACME dash dir    : ${ACME_DASH_DIR}"
     log_info "ACME SS dir      : ${ACME_SS_DIR}"
-    log_info "Cert dir         : ${CERT_DIR}"
+    log_info "Cert key         : ${ACME_DM_KEY}"
+    log_info "Cert fullchain   : ${ACME_DM_FC}"
 
     # ── Phase 1: Diagnose ──
     log_step "PHASE 1: DIAGNOSTICS"
