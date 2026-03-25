@@ -159,6 +159,8 @@ parse_args() {
     ACME_SS_DIR="${ACME_HOME}/${SELF_STEAL_DOMAIN}_ecc"
     ACME_DM_FC="${ACME_DASH_DIR}/fullchain.cer"
     ACME_DM_KEY="${ACME_DASH_DIR}/${DASH_DOMAIN}.key"
+    ACME_SS_FC="${ACME_SS_DIR}/fullchain.cer"
+    ACME_SS_KEY="${ACME_SS_DIR}/${SELF_STEAL_DOMAIN}.key"
 
     if [[ "$WILDCARD" == true ]]; then
         local base_domain
@@ -166,6 +168,9 @@ parse_args() {
         ACME_DASH_DIR="${ACME_HOME}/${base_domain}_ecc"
         ACME_DM_FC="${ACME_DASH_DIR}/fullchain.cer"
         ACME_DM_KEY="${ACME_DASH_DIR}/${base_domain}.key"
+        ACME_SS_DIR="$ACME_DASH_DIR"
+        ACME_SS_FC="$ACME_DM_FC"
+        ACME_SS_KEY="$ACME_DM_KEY"
         WILDCARD_BASE_DOMAIN="$base_domain"
     fi
 }
@@ -238,6 +243,12 @@ install_acme() {
 
 # ─── Issue certificates ────────────────────────────────────────────────────
 
+cert_is_valid() {
+    local cert_file="$1"
+    [[ -f "$cert_file" && -s "$cert_file" ]] || return 1
+    openssl x509 -checkend 86400 -noout -in "$cert_file" 2>/dev/null
+}
+
 issue_certificates() {
     log_step "Issuing SSL certificates"
     mkdir -p "$CERT_DIR"
@@ -248,34 +259,33 @@ issue_certificates() {
         issue_standalone_certs
     fi
 
-    if [[ ! -s "${CERT_DIR}/key.pem" || ! -s "${CERT_DIR}/fullchain.pem" ]]; then
-        log_error "Certificates were NOT installed to ${CERT_DIR}."
-        log_error "key.pem and/or fullchain.pem are missing or empty."
-        log_error "Fix the certificate issue before continuing."
+    if [[ -s "$ACME_DM_KEY" && -s "$ACME_DM_FC" ]]; then
+        log_info "Certificates OK:"
+        log_info "  Key : ${ACME_DM_KEY}"
+        log_info "  Cert: ${ACME_DM_FC}"
+    else
+        log_error "Certificates are missing after issuance."
+        log_error "Check acme.sh log: ${ACME_HOME}/acme.sh.log"
         exit 1
     fi
-
-    log_info "Certificates installed successfully:"
-    log_info "  Key : ${CERT_DIR}/key.pem ($(wc -c < "${CERT_DIR}/key.pem") bytes)"
-    log_info "  Cert: ${CERT_DIR}/fullchain.pem ($(wc -c < "${CERT_DIR}/fullchain.pem") bytes)"
 }
 
 issue_standalone_certs() {
-    log_info "Issuing standalone certificate for ${DASH_DOMAIN}"
-    "$ACME_HOME/acme.sh" --issue --standalone \
-        -d "$DASH_DOMAIN" \
-        --force || true
+    if cert_is_valid "$ACME_DM_FC"; then
+        log_info "Dashboard cert already valid, skipping issue"
+    else
+        log_info "Issuing standalone certificate for ${DASH_DOMAIN}"
+        "$ACME_HOME/acme.sh" --issue --standalone \
+            -d "$DASH_DOMAIN" || true
+    fi
 
-    log_info "Installing certificate to ${CERT_DIR}"
-    "$ACME_HOME/acme.sh" --install-cert -d "$DASH_DOMAIN" \
-        --key-file "${CERT_DIR}/key.pem" \
-        --fullchain-file "${CERT_DIR}/fullchain.pem" \
-        --reloadcmd "systemctl reload nginx" || true
-
-    log_info "Issuing standalone certificate for ${SELF_STEAL_DOMAIN}"
-    "$ACME_HOME/acme.sh" --issue --standalone \
-        -d "$SELF_STEAL_DOMAIN" \
-        --force || true
+    if cert_is_valid "$ACME_SS_FC"; then
+        log_info "SS cert already valid, skipping issue"
+    else
+        log_info "Issuing standalone certificate for ${SELF_STEAL_DOMAIN}"
+        "$ACME_HOME/acme.sh" --issue --standalone \
+            -d "$SELF_STEAL_DOMAIN" || true
+    fi
 }
 
 cf_curl() {
@@ -390,25 +400,21 @@ issue_wildcard_cert() {
 
     setup_cf_credentials
 
-    if ! "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-        -d "${base_domain}" \
-        -d "*.${base_domain}" \
-        --force --log; then
-        log_error "Failed to issue wildcard cert."
-        log_error "See log: ${ACME_HOME}/acme.sh.log"
-        return 1
+    local wild_cert="${ACME_HOME}/${base_domain}_ecc/fullchain.cer"
+    if cert_is_valid "$wild_cert"; then
+        log_info "Wildcard cert already valid, skipping issue"
+    else
+        if ! "$ACME_HOME/acme.sh" --issue --dns dns_cf \
+            -d "${base_domain}" \
+            -d "*.${base_domain}" \
+            --log; then
+            log_error "Failed to issue wildcard cert."
+            log_error "See log: ${ACME_HOME}/acme.sh.log"
+            return 1
+        fi
     fi
 
-    log_info "Installing wildcard certificate to ${CERT_DIR}"
-    "$ACME_HOME/acme.sh" --install-cert -d "${base_domain}" \
-        --key-file "${CERT_DIR}/key.pem" \
-        --fullchain-file "${CERT_DIR}/fullchain.pem" \
-        --reloadcmd "systemctl reload nginx" || true
-
-    log_info "Issuing certificate for ${SELF_STEAL_DOMAIN} via Cloudflare DNS-01"
-    "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-        -d "$SELF_STEAL_DOMAIN" \
-        --force --log || log_warn "SS cert issue failed, continuing..."
+    log_info "Wildcard cert covers both ${DASH_DOMAIN} and ${SELF_STEAL_DOMAIN}"
 }
 
 # ─── Install nginx from official repo ──────────────────────────────────────
@@ -440,8 +446,6 @@ EOF
 
 configure_nginx() {
     log_step "Configuring nginx"
-
-    local ss_cert_dir="${ACME_HOME}/${SELF_STEAL_DOMAIN}_ecc"
 
     cat > "$NGINX_CFG" <<NGINXEOF
 user www-data;
@@ -499,8 +503,8 @@ http {
         set_real_ip_from 127.0.0.1;
         real_ip_header proxy_protocol;
 
-        ssl_certificate ${ss_cert_dir}/fullchain.cer;
-        ssl_certificate_key ${ss_cert_dir}/${SELF_STEAL_DOMAIN}.key;
+        ssl_certificate ${ACME_SS_FC};
+        ssl_certificate_key ${ACME_SS_KEY};
 
         ssl_protocols TLSv1.2 TLSv1.3;
         ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384";
@@ -533,8 +537,6 @@ install_haproxy() {
 configure_haproxy() {
     log_step "Configuring haproxy"
 
-    local ss_cert_dir="${ACME_HOME}/${SELF_STEAL_DOMAIN}_ecc"
-
     cat > "$HAPROXY_CFG" <<HAEOF
 global
     log /dev/log local0
@@ -546,8 +548,8 @@ global
     group haproxy
     daemon
 
-    ca-base ${ss_cert_dir}
-    crt-base ${ss_cert_dir}
+    ca-base ${ACME_SS_DIR}
+    crt-base ${ACME_SS_DIR}
 
     ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384
     ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
