@@ -26,10 +26,13 @@ UVICORN_PORT="10000"
 REALITY_PORT="12000"
 
 CF_TOKEN=""
+CF_KEY=""
+CF_EMAIL=""
 CF_ACCOUNT_ID=""
 CF_ZONE_ID=""
 DASH_DOMAIN=""
 SELF_STEAL_DOMAIN=""
+CF_AUTH_MODE=""
 WILDCARD=false
 WILDCARD_BASE_DOMAIN=""
 SKIP_WARP=false
@@ -54,11 +57,17 @@ Required:
   --ss-domain     <domain>   Self-steal (camouflage) domain (e.g. cover.example.com)
   --acme-email    <email>    Real email for Let's Encrypt registration
 
-Cloudflare DNS-01 (required for wildcard certs, optional otherwise):
-  --cf-token      <token>    Cloudflare API token (DNS edit permission)
-  --cf-account-id <id>       Cloudflare Account ID (use this OR --cf-zone-id)
-  --cf-zone-id    <id>       Cloudflare Zone ID (more reliable for scoped tokens)
-  --wildcard                 Issue wildcard certificate (*.domain) — requires Cloudflare
+Cloudflare DNS-01 (required for wildcard certs):
+  Method 1 — Global API Key (simpler):
+    --cf-key        <key>      Global API Key (37 chars, from CF profile)
+    --cf-email      <email>    Cloudflare account email
+
+  Method 2 — Scoped API Token:
+    --cf-token      <token>    API Token (40 chars, with DNS:Edit + Zone:Read)
+    --cf-account-id <id>       Account ID (use this OR --cf-zone-id)
+    --cf-zone-id    <id>       Zone ID (more reliable for scoped tokens)
+
+  --wildcard                   Issue wildcard certificate (*.domain)
 
 Optional:
   --marzban-dir   <path>     Marzban install directory (default: /opt/marzban)
@@ -73,15 +82,15 @@ Examples:
   dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
         --acme-email "your@email.com"
 
-  # Wildcard certificate via Cloudflare DNS-01 (with Zone ID — recommended)
+  # Wildcard via Global API Key (simplest)
+  dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
+        --acme-email "your@email.com" \
+        --cf-key "your_global_api_key" --cf-email "cf@email.com" --wildcard
+
+  # Wildcard via Scoped API Token + Zone ID
   dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
         --acme-email "your@email.com" \
         --cf-token "your_api_token" --cf-zone-id "your_zone_id" --wildcard
-
-  # Wildcard certificate via Cloudflare DNS-01 (with Account ID)
-  dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
-        --acme-email "your@email.com" \
-        --cf-token "your_api_token" --cf-account-id "your_account_id" --wildcard
 USAGE
     exit 0
 }
@@ -94,6 +103,8 @@ parse_args() {
             --dash-domain)    DASH_DOMAIN="$2";      shift 2 ;;
             --ss-domain)      SELF_STEAL_DOMAIN="$2"; shift 2 ;;
             --cf-token)       CF_TOKEN="$2";          shift 2 ;;
+            --cf-key)         CF_KEY="$2";            shift 2 ;;
+            --cf-email)       CF_EMAIL="$2";          shift 2 ;;
             --cf-account-id)  CF_ACCOUNT_ID="$2";     shift 2 ;;
             --cf-zone-id)     CF_ZONE_ID="$2";        shift 2 ;;
             --acme-email)     ACME_EMAIL="$2";        shift 2 ;;
@@ -122,12 +133,20 @@ parse_args() {
     fi
 
     if [[ "$WILDCARD" == true ]]; then
-        if [[ -z "$CF_TOKEN" ]]; then
-            log_error "--cf-token is required when using --wildcard."
-            exit 1
-        fi
-        if [[ -z "$CF_ACCOUNT_ID" && -z "$CF_ZONE_ID" ]]; then
-            log_error "--cf-account-id or --cf-zone-id is required when using --wildcard."
+        if [[ -n "$CF_KEY" && -n "$CF_EMAIL" ]]; then
+            CF_AUTH_MODE="global_key"
+            log_info "Using Cloudflare Global API Key"
+        elif [[ -n "$CF_TOKEN" ]]; then
+            CF_AUTH_MODE="api_token"
+            if [[ -z "$CF_ACCOUNT_ID" && -z "$CF_ZONE_ID" ]]; then
+                log_error "--cf-account-id or --cf-zone-id is required with --cf-token."
+                exit 1
+            fi
+            log_info "Using Cloudflare API Token"
+        else
+            log_error "Wildcard requires Cloudflare auth. Use either:"
+            log_error "  --cf-key <global_key> --cf-email <email>  (Global API Key)"
+            log_error "  --cf-token <token> --cf-zone-id <id>      (Scoped API Token)"
             exit 1
         fi
     fi
@@ -258,63 +277,103 @@ issue_standalone_certs() {
         --force || true
 }
 
+cf_curl() {
+    if [[ "$CF_AUTH_MODE" == "global_key" ]]; then
+        curl -s "$@" -H "X-Auth-Key: ${CF_KEY}" -H "X-Auth-Email: ${CF_EMAIL}" -H "Content-Type: application/json"
+    else
+        curl -s "$@" -H "Authorization: Bearer ${CF_TOKEN}" -H "Content-Type: application/json"
+    fi
+}
+
 verify_cloudflare_api() {
-    log_info "Verifying Cloudflare API access..."
+    log_info "Verifying Cloudflare API access (mode: ${CF_AUTH_MODE})..."
 
-    local token_check
-    token_check=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
-        -H "Authorization: Bearer ${CF_TOKEN}" \
-        -H "Content-Type: application/json")
+    local verify_check
+    if [[ "$CF_AUTH_MODE" == "global_key" ]]; then
+        verify_check=$(cf_curl -X GET "https://api.cloudflare.com/client/v4/user")
+    else
+        verify_check=$(cf_curl -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify")
+    fi
 
-    local token_status
-    token_status=$(echo "$token_check" | jq -r '.success // false')
+    local verify_ok
+    verify_ok=$(echo "$verify_check" | jq -r '.success // false')
 
-    if [[ "$token_status" != "true" ]]; then
-        log_error "Cloudflare API token is INVALID or expired."
-        log_error "API response: $(echo "$token_check" | jq -r '.errors[0].message // .errors // "unknown"')"
-        log_error "Token length: ${#CF_TOKEN} chars (expected: 40)"
+    if [[ "$verify_ok" != "true" ]]; then
+        log_error "Cloudflare authentication FAILED."
+        log_error "API response: $(echo "$verify_check" | jq -r '.errors[0].message // .errors // "unknown"')"
+        if [[ "$CF_AUTH_MODE" == "api_token" ]]; then
+            log_error "Token length: ${#CF_TOKEN} chars (expected: 40)"
+        fi
         return 1
     fi
-    log_ok "Token is valid: $(echo "$token_check" | jq -r '.result.status')"
 
-    if [[ -n "$CF_ZONE_ID" ]]; then
-        local zone_check
-        zone_check=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}" \
-            -H "Authorization: Bearer ${CF_TOKEN}" \
-            -H "Content-Type: application/json")
+    if [[ "$CF_AUTH_MODE" == "global_key" ]]; then
+        log_ok "Global API Key is valid (user: ${CF_EMAIL})"
+    else
+        log_ok "API Token is valid: $(echo "$verify_check" | jq -r '.result.status')"
+    fi
 
-        local zone_success
-        zone_success=$(echo "$zone_check" | jq -r '.success // false')
-
-        if [[ "$zone_success" != "true" ]]; then
-            log_error "Cannot access Zone ID ${CF_ZONE_ID}"
-            log_error "API response: $(echo "$zone_check" | jq -r '.errors[0].message // .errors // "unknown"')"
-            log_error "Check that the token has Zone:Read + DNS:Edit permissions for this zone."
+    local zone_id="${CF_ZONE_ID}"
+    if [[ -z "$zone_id" ]]; then
+        log_info "No Zone ID provided, looking up zone for ${1}..."
+        local zones
+        zones=$(cf_curl -X GET "https://api.cloudflare.com/client/v4/zones?name=${1}")
+        zone_id=$(echo "$zones" | jq -r '.result[0].id // empty')
+        if [[ -z "$zone_id" ]]; then
+            log_error "Cannot find zone '${1}' via API. Provide --cf-zone-id explicitly."
             return 1
         fi
-
-        local zone_name
-        zone_name=$(echo "$zone_check" | jq -r '.result.name')
-        log_ok "Zone access confirmed: ${zone_name} (${CF_ZONE_ID})"
+        CF_ZONE_ID="$zone_id"
+        log_ok "Found zone: ${1} (${zone_id})"
+    else
+        local zone_check
+        zone_check=$(cf_curl -X GET "https://api.cloudflare.com/client/v4/zones/${zone_id}")
+        local zone_ok
+        zone_ok=$(echo "$zone_check" | jq -r '.success // false')
+        if [[ "$zone_ok" != "true" ]]; then
+            log_error "Cannot access Zone ID ${zone_id}"
+            log_error "API response: $(echo "$zone_check" | jq -r '.errors[0].message // .errors // "unknown"')"
+            return 1
+        fi
+        log_ok "Zone access confirmed: $(echo "$zone_check" | jq -r '.result.name') (${zone_id})"
     fi
 
     local dns_test
-    dns_test=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=TXT&name=_acme-test.${1}" \
-        -H "Authorization: Bearer ${CF_TOKEN}" \
-        -H "Content-Type: application/json")
-
-    local dns_success
-    dns_success=$(echo "$dns_test" | jq -r '.success // false')
-    if [[ "$dns_success" == "true" ]]; then
+    dns_test=$(cf_curl -X GET "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records?type=TXT&per_page=1")
+    local dns_ok
+    dns_ok=$(echo "$dns_test" | jq -r '.success // false')
+    if [[ "$dns_ok" == "true" ]]; then
         log_ok "DNS read access confirmed"
     else
-        log_error "Cannot read DNS records for zone."
+        log_error "Cannot read DNS records."
         log_error "API response: $(echo "$dns_test" | jq -r '.errors[0].message // .errors // "unknown"')"
-        log_error "Token needs: Zone:DNS:Edit and Zone:Zone:Read permissions."
         return 1
     fi
 
     return 0
+}
+
+setup_cf_credentials() {
+    local acme_conf="${ACME_HOME}/account.conf"
+    [[ ! -f "$acme_conf" ]] && return
+
+    sed -i '/^SAVED_CF_Token=/d; /^SAVED_CF_Account_ID=/d; /^SAVED_CF_Zone_ID=/d; /^SAVED_CF_Key=/d; /^SAVED_CF_Email=/d' "$acme_conf"
+
+    if [[ "$CF_AUTH_MODE" == "global_key" ]]; then
+        echo "SAVED_CF_Key='${CF_KEY}'" >> "$acme_conf"
+        echo "SAVED_CF_Email='${CF_EMAIL}'" >> "$acme_conf"
+        export CF_Key="$CF_KEY"
+        export CF_Email="$CF_EMAIL"
+        log_info "Set Cloudflare Global API Key credentials"
+    else
+        echo "SAVED_CF_Token='${CF_TOKEN}'" >> "$acme_conf"
+        [[ -n "$CF_ACCOUNT_ID" ]] && echo "SAVED_CF_Account_ID='${CF_ACCOUNT_ID}'" >> "$acme_conf"
+        [[ -n "$CF_ZONE_ID" ]]    && echo "SAVED_CF_Zone_ID='${CF_ZONE_ID}'" >> "$acme_conf"
+        export CF_Token="$CF_TOKEN"
+        [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
+        [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
+        log_info "Set Cloudflare API Token credentials"
+    fi
 }
 
 issue_wildcard_cert() {
@@ -328,26 +387,14 @@ issue_wildcard_cert() {
         exit 1
     fi
 
-    local acme_conf="${ACME_HOME}/account.conf"
-    if [[ -f "$acme_conf" ]]; then
-        sed -i '/^SAVED_CF_Token=/d; /^SAVED_CF_Account_ID=/d; /^SAVED_CF_Zone_ID=/d' "$acme_conf"
-        echo "SAVED_CF_Token='${CF_TOKEN}'" >> "$acme_conf"
-        [[ -n "$CF_ACCOUNT_ID" ]] && echo "SAVED_CF_Account_ID='${CF_ACCOUNT_ID}'" >> "$acme_conf"
-        [[ -n "$CF_ZONE_ID" ]]    && echo "SAVED_CF_Zone_ID='${CF_ZONE_ID}'" >> "$acme_conf"
-        log_info "Updated Cloudflare credentials in account.conf"
-    fi
-
-    export CF_Token="$CF_TOKEN"
-    [[ -n "$CF_ACCOUNT_ID" ]] && export CF_Account_ID="$CF_ACCOUNT_ID"
-    [[ -n "$CF_ZONE_ID" ]]    && export CF_Zone_ID="$CF_ZONE_ID"
+    setup_cf_credentials
 
     if ! "$ACME_HOME/acme.sh" --issue --dns dns_cf \
         -d "${base_domain}" \
         -d "*.${base_domain}" \
         --force --log; then
-        log_error "Failed to issue wildcard cert. Check CF token/zone permissions."
+        log_error "Failed to issue wildcard cert."
         log_error "See log: ${ACME_HOME}/acme.sh.log"
-        log_error "Hint: try --cf-zone-id instead of --cf-account-id"
         return 1
     fi
 
