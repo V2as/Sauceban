@@ -126,6 +126,15 @@ require_root() {
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
+apt_install() {
+    apt-get install -y -o Dpkg::Options::="--force-confold" \
+                       -o Dpkg::Options::="--force-confdef" "$@"
+}
+
+get_codename() {
+    lsb_release -cs 2>/dev/null || (. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-noble}}")
+}
+
 env_get() {
     local key="$1" file="${2:-$MARZBAN_ENV}"
     grep -E "^\s*${key}\s*=" "$file" 2>/dev/null \
@@ -258,10 +267,13 @@ fix_certificates() {
             -d "*.${BASE_DOMAIN}" \
             --force || true
 
+        local reload_cmd=""
+        command -v nginx &>/dev/null && reload_cmd="systemctl reload nginx"
+
         "$ACME_HOME/acme.sh" --install-cert -d "${BASE_DOMAIN}" \
             --key-file "${CERT_DIR}/key.pem" \
             --fullchain-file "${CERT_DIR}/fullchain.pem" \
-            --reloadcmd "systemctl reload nginx" || true
+            ${reload_cmd:+--reloadcmd "$reload_cmd"} || true
 
         FIXED=$((FIXED + 1))
     else
@@ -272,10 +284,13 @@ fix_certificates() {
             fi
 
             log_fix "Re-installing cert from acme.sh to ${CERT_DIR}"
+            local reload_cmd=""
+            command -v nginx &>/dev/null && reload_cmd="systemctl reload nginx"
+
             "$ACME_HOME/acme.sh" --install-cert -d "$DASH_DOMAIN" \
                 --key-file "${CERT_DIR}/key.pem" \
                 --fullchain-file "${CERT_DIR}/fullchain.pem" \
-                --reloadcmd "systemctl reload nginx" || true
+                ${reload_cmd:+--reloadcmd "$reload_cmd"} || true
 
             FIXED=$((FIXED + 1))
         else
@@ -288,10 +303,13 @@ fix_certificates() {
             "$ACME_HOME/acme.sh" --issue --standalone \
                 -d "$DASH_DOMAIN" --force || true
 
+            local reload_cmd=""
+            command -v nginx &>/dev/null && reload_cmd="systemctl reload nginx"
+
             "$ACME_HOME/acme.sh" --install-cert -d "$DASH_DOMAIN" \
                 --key-file "${CERT_DIR}/key.pem" \
                 --fullchain-file "${CERT_DIR}/fullchain.pem" \
-                --reloadcmd "systemctl reload nginx" || true
+                ${reload_cmd:+--reloadcmd "$reload_cmd"} || true
 
             FIXED=$((FIXED + 1))
         fi
@@ -431,20 +449,33 @@ check_nginx() {
     return 0
 }
 
-fix_nginx() {
-    log_step "Fixing nginx config"
+install_nginx() {
+    log_fix "Installing nginx from official repo..."
 
-    if ! command -v nginx &>/dev/null; then
-        log_error "nginx not installed — cannot fix config. Install nginx first."
-        return 1
-    fi
+    curl -fsSL https://nginx.org/keys/nginx_signing.key \
+        | gpg --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
 
+    local codename
+    codename=$(get_codename)
+
+    cat > /etc/apt/sources.list.d/nginx.list <<EOF
+deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/ubuntu ${codename} nginx
+EOF
+
+    cat > /etc/apt/preferences.d/99-nginx <<EOF
+Package: nginx*
+Pin: origin nginx.org
+Pin-Priority: 900
+EOF
+
+    apt-get update -qq
+    apt_install nginx
+    log_fix "nginx installed"
+    FIXED=$((FIXED + 1))
+}
+
+write_nginx_config() {
     local ss_cert_dir="${ACME_HOME}/${SELF_STEAL_DOMAIN}_ecc"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        log_fix "[dry-run] Would rewrite ${NGINX_CFG} with correct domains and cert paths"
-        return 0
-    fi
 
     cat > "$NGINX_CFG" <<NGINXEOF
 user www-data;
@@ -469,7 +500,7 @@ http {
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384";
     ssl_prefer_server_ciphers on;
 
-    log_format proxlog '\\$status (\\$proxy_protocol_addr) \\$remote_user [\\$time_local]';
+    log_format proxlog '\\\$status (\\\$proxy_protocol_addr) \\\$remote_user [\\\$time_local]';
     access_log /var/log/nginx/access.log proxlog;
 
     gzip on;
@@ -522,6 +553,24 @@ http {
     }
 }
 NGINXEOF
+}
+
+fix_nginx() {
+    log_step "Fixing nginx"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        if ! command -v nginx &>/dev/null; then
+            log_fix "[dry-run] Would install nginx from official repo"
+        fi
+        log_fix "[dry-run] Would rewrite ${NGINX_CFG} with correct domains and cert paths"
+        return 0
+    fi
+
+    if ! command -v nginx &>/dev/null; then
+        install_nginx
+    fi
+
+    write_nginx_config
 
     if nginx -t 2>/dev/null; then
         log_fix "nginx config rewritten and syntax OK"
@@ -529,6 +578,8 @@ NGINXEOF
     else
         log_error "nginx config rewritten but syntax test FAILED — check manually"
     fi
+
+    systemctl enable nginx 2>/dev/null || true
 }
 
 # ─── 4. Check haproxy ──────────────────────────────────────────────────────
@@ -589,19 +640,25 @@ check_haproxy() {
 }
 
 fix_haproxy() {
-    log_step "Fixing haproxy config"
-
-    if ! command -v haproxy &>/dev/null; then
-        log_error "haproxy not installed — cannot fix config."
-        return 1
-    fi
-
-    local ss_cert_dir="${ACME_HOME}/${SELF_STEAL_DOMAIN}_ecc"
+    log_step "Fixing haproxy"
 
     if [[ "$DRY_RUN" == true ]]; then
+        if ! command -v haproxy &>/dev/null; then
+            log_fix "[dry-run] Would install haproxy"
+        fi
         log_fix "[dry-run] Would rewrite ${HAPROXY_CFG} with correct domains and ports"
         return 0
     fi
+
+    if ! command -v haproxy &>/dev/null; then
+        log_fix "Installing haproxy..."
+        apt-get update -qq
+        apt_install haproxy
+        log_fix "haproxy installed"
+        FIXED=$((FIXED + 1))
+    fi
+
+    local ss_cert_dir="${ACME_HOME}/${SELF_STEAL_DOMAIN}_ecc"
 
     cat > "$HAPROXY_CFG" <<HAEOF
 global
@@ -661,6 +718,7 @@ HAEOF
 
     log_fix "haproxy config rewritten"
     FIXED=$((FIXED + 1))
+    systemctl enable haproxy 2>/dev/null || true
 }
 
 # ─── 5. Check docker-compose volumes ──────────────────────────────────────
@@ -789,16 +847,16 @@ main() {
         fix_certificates && need_restart=true
     fi
 
-    if [[ "$env_ok" == false ]]; then
-        fix_env && need_restart=true
-    fi
-
     if [[ "$nginx_ok" == false ]]; then
         fix_nginx && need_restart=true
     fi
 
     if [[ "$haproxy_ok" == false ]]; then
         fix_haproxy && need_restart=true
+    fi
+
+    if [[ "$env_ok" == false ]]; then
+        fix_env && need_restart=true
     fi
 
     if [[ "$compose_ok" == false ]]; then

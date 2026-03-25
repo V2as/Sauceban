@@ -13,7 +13,7 @@ export NEEDRESTART_SUSPEND=1
 
 # ─── Defaults ───────────────────────────────────────────────────────────────
 
-ACME_EMAIL="admin@example.com"
+ACME_EMAIL=""
 MARZBAN_DIR="/opt/marzban"
 MARZBAN_ENV="${MARZBAN_DIR}/.env"
 MARZBAN_COMPOSE="${MARZBAN_DIR}/docker-compose.yml"
@@ -51,6 +51,7 @@ Usage:
 Required:
   --dash-domain   <domain>   Dashboard / subscription domain (e.g. panel.example.com)
   --ss-domain     <domain>   Self-steal (camouflage) domain (e.g. cover.example.com)
+  --acme-email    <email>    Real email for Let's Encrypt registration
 
 Cloudflare DNS-01 (required for wildcard certs, optional otherwise):
   --cf-token      <token>    Cloudflare API token (DNS edit permission)
@@ -58,7 +59,6 @@ Cloudflare DNS-01 (required for wildcard certs, optional otherwise):
   --wildcard                 Issue wildcard certificate (*.domain) — requires Cloudflare
 
 Optional:
-  --acme-email    <email>    Email for Let's Encrypt (default: admin@example.com)
   --marzban-dir   <path>     Marzban install directory (default: /opt/marzban)
   --uvicorn-port  <port>     Uvicorn listen port (default: 10000)
   --reality-port  <port>     Reality backend port (default: 12000)
@@ -68,10 +68,12 @@ Optional:
 
 Examples:
   # Standalone certificate (HTTP-01)
-  dd.sh --dash-domain panel.example.com --ss-domain cover.example.com
+  dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
+        --acme-email "your@email.com"
 
   # Wildcard certificate via Cloudflare DNS-01
   dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
+        --acme-email "your@email.com" \
         --cf-token "your_api_token" --cf-account-id "your_account_id" --wildcard
 USAGE
     exit 0
@@ -104,6 +106,11 @@ parse_args() {
     if [[ -z "$DASH_DOMAIN" || -z "$SELF_STEAL_DOMAIN" ]]; then
         log_error "--dash-domain and --ss-domain are required."
         usage
+    fi
+
+    if [[ -z "$ACME_EMAIL" ]]; then
+        log_error "--acme-email is required (a real email for Let's Encrypt registration)."
+        exit 1
     fi
 
     if [[ "$WILDCARD" == true ]]; then
@@ -185,6 +192,8 @@ install_acme() {
         "$ACME_HOME/acme.sh" --upgrade
     fi
     "$ACME_HOME/acme.sh" --set-default-ca --server letsencrypt
+    "$ACME_HOME/acme.sh" --register-account -m "$ACME_EMAIL" || true
+    log_info "ACME account registered with email: ${ACME_EMAIL}"
 }
 
 # ─── Issue certificates ────────────────────────────────────────────────────
@@ -253,7 +262,7 @@ install_nginx() {
         | gpg --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
 
     local codename
-    codename=$(lsb_release -cs 2>/dev/null || source /etc/os-release && echo "$VERSION_CODENAME")
+    codename=$(lsb_release -cs 2>/dev/null || (. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-noble}}"))
 
     cat > /etc/apt/sources.list.d/nginx.list <<EOF
 deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/ubuntu ${codename} nginx
@@ -438,7 +447,7 @@ install_warp() {
     log_step "Installing Cloudflare WARP"
 
     local codename
-    codename=$(lsb_release -cs 2>/dev/null || source /etc/os-release && echo "$VERSION_CODENAME")
+    codename=$(lsb_release -cs 2>/dev/null || (. /etc/os-release && echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-noble}}"))
 
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
         | gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
