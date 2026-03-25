@@ -30,6 +30,7 @@ CF_ACCOUNT_ID=""
 DASH_DOMAIN=""
 SELF_STEAL_DOMAIN=""
 WILDCARD=false
+WILDCARD_BASE_DOMAIN=""
 SKIP_WARP=false
 SKIP_CRON=false
 
@@ -123,9 +124,10 @@ parse_args() {
     if [[ "$WILDCARD" == true ]]; then
         local base_domain
         base_domain=$(echo "$DASH_DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
-        ACME_WILD_DIR="${ACME_HOME}/*.${base_domain}_ecc"
-        ACME_DM_FC="${ACME_WILD_DIR}/fullchain.cer"
-        ACME_DM_KEY="${ACME_WILD_DIR}/*.${base_domain}.key"
+        ACME_DASH_DIR="${ACME_HOME}/${base_domain}_ecc"
+        ACME_DM_FC="${ACME_DASH_DIR}/fullchain.cer"
+        ACME_DM_KEY="${ACME_DASH_DIR}/${base_domain}.key"
+        WILDCARD_BASE_DOMAIN="$base_domain"
     fi
 }
 
@@ -202,9 +204,13 @@ issue_standalone_certs() {
     log_info "Issuing standalone certificate for ${DASH_DOMAIN}"
     "$ACME_HOME/acme.sh" --issue --standalone \
         -d "$DASH_DOMAIN" \
+        --force || true
+
+    log_info "Installing certificate to ${CERT_DIR}"
+    "$ACME_HOME/acme.sh" --install-cert -d "$DASH_DOMAIN" \
         --key-file "${CERT_DIR}/key.pem" \
         --fullchain-file "${CERT_DIR}/fullchain.pem" \
-        --force || true
+        --reloadcmd "systemctl reload nginx" || true
 
     log_info "Issuing standalone certificate for ${SELF_STEAL_DOMAIN}"
     "$ACME_HOME/acme.sh" --issue --standalone \
@@ -224,9 +230,13 @@ issue_wildcard_cert() {
     "$ACME_HOME/acme.sh" --issue --dns dns_cf \
         -d "${base_domain}" \
         -d "*.${base_domain}" \
+        --force || true
+
+    log_info "Installing wildcard certificate to ${CERT_DIR}"
+    "$ACME_HOME/acme.sh" --install-cert -d "${base_domain}" \
         --key-file "${CERT_DIR}/key.pem" \
         --fullchain-file "${CERT_DIR}/fullchain.pem" \
-        --force || true
+        --reloadcmd "systemctl reload nginx" || true
 
     log_info "Issuing certificate for ${SELF_STEAL_DOMAIN} via Cloudflare DNS-01"
     "$ACME_HOME/acme.sh" --issue --dns dns_cf \
@@ -500,10 +510,12 @@ configure_marzban_env() {
     env_set "SUB_PROFILE_TITLE"         "\"BLACKTEMPLE VPN BR\""
     env_set "SUB_UPDATE_INTERVAL"       "\"2\""
     env_set "XRAY_SUBSCRIPTION_URL_PREFIX" "\"https://${DASH_DOMAIN}\""
-    env_set "UVICORN_SSL_KEYFILE"       "\"${ACME_DM_KEY}\""
-    env_set "UVICORN_SSL_CERTFILE"      "\"${ACME_DM_FC}\""
+    env_set "UVICORN_SSL_KEYFILE"       "\"${CERT_DIR}/key.pem\""
+    env_set "UVICORN_SSL_CERTFILE"      "\"${CERT_DIR}/fullchain.pem\""
 
     log_info "Marzban .env updated"
+    log_info "  UVICORN_SSL_KEYFILE  = ${CERT_DIR}/key.pem"
+    log_info "  UVICORN_SSL_CERTFILE = ${CERT_DIR}/fullchain.pem"
 }
 
 # ─── Add ACME volume to docker-compose ─────────────────────────────────────
@@ -517,11 +529,6 @@ add_acme_volume() {
     fi
 
     local acme_dir="$ACME_DASH_DIR"
-    if [[ "$WILDCARD" == true ]]; then
-        local base_domain
-        base_domain=$(echo "$DASH_DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
-        acme_dir="${ACME_HOME}/*.${base_domain}_ecc"
-    fi
 
     local volume_entry="${acme_dir}:${acme_dir}"
     if grep -qF "$volume_entry" "$MARZBAN_COMPOSE" 2>/dev/null; then
