@@ -191,6 +191,14 @@ install_acme() {
         log_info "acme.sh already installed, upgrading..."
         "$ACME_HOME/acme.sh" --upgrade
     fi
+
+    local acme_conf="${ACME_HOME}/account.conf"
+    if [[ -f "$acme_conf" ]]; then
+        sed -i "/^ACCOUNT_EMAIL=/d" "$acme_conf"
+        echo "ACCOUNT_EMAIL='${ACME_EMAIL}'" >> "$acme_conf"
+        log_info "Forced email in account.conf: ${ACME_EMAIL}"
+    fi
+
     "$ACME_HOME/acme.sh" --set-default-ca --server letsencrypt
     "$ACME_HOME/acme.sh" --register-account -m "$ACME_EMAIL" || true
     log_info "ACME account registered with email: ${ACME_EMAIL}"
