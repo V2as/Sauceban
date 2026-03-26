@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DD_VERSION="2.5.0-20260325"
+DD_VERSION="2.6.0-20260326"
 
 # ============================================================================
 #  Marzban deploy helper — nginx + haproxy + acme.sh + WARP + sysctl tuning
@@ -39,6 +39,7 @@ WILDCARD=false
 WILDCARD_BASE_DOMAIN=""
 SKIP_WARP=false
 SKIP_CRON=false
+LOG_FILE="/root/dd.log"
 
 # ─── Colored output ────────────────────────────────────────────────────────
 
@@ -47,6 +48,21 @@ log_ok()    { printf '\e[92m[OK]\e[0m    %s\n' "$*"; }
 log_warn()  { printf '\e[93m[WARN]\e[0m  %s\n' "$*"; }
 log_error() { printf '\e[91m[ERROR]\e[0m %s\n' "$*" >&2; }
 log_step()  { printf '\n\e[96m══ %s ══\e[0m\n' "$*"; }
+
+# ─── File logging with timestamps ─────────────────────────────────────────
+
+setup_logging() {
+    : > "$LOG_FILE"
+    exec 3>&1
+    exec > >(
+        tee >(
+            sed -u $'s/\x1b\\[[0-9;]*m//g' |
+            while IFS= read -r line; do
+                printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$line"
+            done >> "$LOG_FILE"
+        ) >&3
+    ) 2>&1
+}
 
 # ─── Usage / help ──────────────────────────────────────────────────────────
 
@@ -273,28 +289,52 @@ issue_certificates() {
     fi
 }
 
-issue_standalone_certs() {
-    if cert_is_valid "$ACME_DM_FC"; then
-        log_info "Dashboard cert already valid, skipping issue"
-    else
-        log_info "Issuing standalone certificate for ${DASH_DOMAIN}"
-        local rc=0
-        "$ACME_HOME/acme.sh" --issue --standalone -d "$DASH_DOMAIN" || rc=$?
-        if [[ $rc -ne 0 ]] && cert_is_valid "$ACME_DM_FC"; then
-            log_warn "acme.sh returned ${rc} for dash cert, but valid cert exists — continuing"
-        fi
+issue_cert_with_fallback() {
+    local domain="$1"
+    local acme_dir="${ACME_HOME}/${domain}_ecc"
+    local cert_file="${acme_dir}/fullchain.cer"
+
+    if cert_is_valid "$cert_file"; then
+        log_info "Certificate for ${domain} already valid, skipping"
+        return 0
     fi
 
-    if cert_is_valid "$ACME_SS_FC"; then
-        log_info "SS cert already valid, skipping issue"
-    else
-        log_info "Issuing standalone certificate for ${SELF_STEAL_DOMAIN}"
-        local rc=0
-        "$ACME_HOME/acme.sh" --issue --standalone -d "$SELF_STEAL_DOMAIN" || rc=$?
-        if [[ $rc -ne 0 ]] && cert_is_valid "$ACME_SS_FC"; then
-            log_warn "acme.sh returned ${rc} for SS cert, but valid cert exists — continuing"
+    local servers=("" "zerossl" "buypass")
+    local labels=("Let's Encrypt" "ZeroSSL" "Buypass")
+    local prev_label=""
+
+    for i in "${!servers[@]}"; do
+        local server="${servers[$i]}"
+        local label="${labels[$i]}"
+        local args=(--issue --standalone -d "$domain" --log)
+
+        if [[ -n "$server" ]]; then
+            log_warn "${prev_label} failed for ${domain} — trying ${label}"
+            "$ACME_HOME/acme.sh" --register-account --server "$server" -m "$ACME_EMAIL" 2>&1 || true
+            args+=(--server "$server" --force)
+        else
+            log_info "Issuing certificate for ${domain} via ${label}"
         fi
-    fi
+
+        local rc=0
+        "$ACME_HOME/acme.sh" "${args[@]}" 2>&1 || rc=$?
+
+        if [[ $rc -eq 0 ]] || cert_is_valid "$cert_file"; then
+            [[ $rc -ne 0 ]] && log_warn "acme.sh exit ${rc}, but valid cert exists — OK"
+            log_ok "Certificate for ${domain} issued via ${label}"
+            return 0
+        fi
+
+        prev_label="$label"
+    done
+
+    log_error "All CAs failed for ${domain}. Check: ${ACME_HOME}/acme.sh.log"
+    return 1
+}
+
+issue_standalone_certs() {
+    issue_cert_with_fallback "$DASH_DOMAIN"
+    issue_cert_with_fallback "$SELF_STEAL_DOMAIN"
 }
 
 cf_curl() {
@@ -416,38 +456,38 @@ issue_wildcard_cert() {
         return 0
     fi
 
-    local rc=0
-    "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-        -d "${base_domain}" \
-        -d "*.${base_domain}" \
-        --log 2>&1 || rc=$?
+    local servers=("" "zerossl" "buypass")
+    local labels=("Let's Encrypt" "ZeroSSL" "Buypass")
+    local prev_label=""
 
-    if [[ $rc -ne 0 ]]; then
-        local acme_log="${ACME_HOME}/acme.sh.log"
-        if grep -q "rateLimited" "$acme_log" 2>/dev/null; then
-            log_warn "Let's Encrypt rate limit hit — switching to ZeroSSL"
-            "$ACME_HOME/acme.sh" --register-account --server zerossl -m "$ACME_EMAIL" || true
+    for i in "${!servers[@]}"; do
+        local server="${servers[$i]}"
+        local label="${labels[$i]}"
+        local args=(--issue --dns dns_cf -d "${base_domain}" -d "*.${base_domain}" --log)
 
-            rc=0
-            "$ACME_HOME/acme.sh" --issue --dns dns_cf \
-                -d "${base_domain}" \
-                -d "*.${base_domain}" \
-                --server zerossl \
-                --force --log 2>&1 || rc=$?
+        if [[ -n "$server" ]]; then
+            log_warn "${prev_label} failed — trying ${label}"
+            "$ACME_HOME/acme.sh" --register-account --server "$server" -m "$ACME_EMAIL" 2>&1 || true
+            args+=(--server "$server" --force)
+        else
+            log_info "Trying ${label}..."
         fi
 
-        if [[ $rc -ne 0 ]]; then
-            if cert_is_valid "$wild_cert"; then
-                log_warn "Issue failed (code ${rc}), but valid cert exists — continuing"
-            else
-                log_error "Failed to issue wildcard cert (exit code ${rc})."
-                log_error "See log: ${ACME_HOME}/acme.sh.log"
-                return 1
-            fi
-        fi
-    fi
+        local rc=0
+        "$ACME_HOME/acme.sh" "${args[@]}" 2>&1 || rc=$?
 
-    log_info "Wildcard cert covers both ${DASH_DOMAIN} and ${SELF_STEAL_DOMAIN}"
+        if [[ $rc -eq 0 ]] || cert_is_valid "$wild_cert"; then
+            [[ $rc -ne 0 ]] && log_warn "acme.sh exit ${rc}, but valid cert exists — OK"
+            log_info "Wildcard cert covers both ${DASH_DOMAIN} and ${SELF_STEAL_DOMAIN}"
+            return 0
+        fi
+
+        prev_label="$label"
+    done
+
+    log_error "Failed to issue wildcard cert with all CAs."
+    log_error "See log: ${ACME_HOME}/acme.sh.log"
+    return 1
 }
 
 # ─── Install nginx from official repo ──────────────────────────────────────
@@ -872,6 +912,8 @@ restart_services() {
 main() {
     parse_args "$@"
     require_root
+    setup_logging
+    trap 'sleep 0.5' EXIT
 
     log_step "Starting deployment (dd.sh v${DD_VERSION})"
     log_info "Dashboard domain : ${DASH_DOMAIN}"
@@ -900,6 +942,7 @@ main() {
     log_info "Certs     : ${CERT_DIR}/"
     log_info "Nginx cfg : ${NGINX_CFG}"
     log_info "HAProxy   : ${HAPROXY_CFG}"
+    log_info "Install log: ${LOG_FILE}"
 }
 
 main "$@"
