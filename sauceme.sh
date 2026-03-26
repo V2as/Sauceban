@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
 INSTALL_DIR="/opt"
 if [ -z "$APP_NAME" ]; then
     APP_NAME="marzban"
@@ -62,7 +66,7 @@ detect_and_update_package_manager() {
     colorized_echo blue "Updating package manager"
     if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
         PKG_MANAGER="apt-get"
-        DEBIAN_FRONTEND=noninteractive $PKG_MANAGER update -qq
+        $PKG_MANAGER update -qq
     elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "AlmaLinux"* ]]; then
         PKG_MANAGER="yum"
         $PKG_MANAGER update -y
@@ -90,7 +94,7 @@ install_package () {
     PACKAGE=$1
     colorized_echo blue "Installing $PACKAGE"
     if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
-        DEBIAN_FRONTEND=noninteractive $PKG_MANAGER -y install "$PACKAGE"
+        $PKG_MANAGER install -y -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" "$PACKAGE"
     elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "AlmaLinux"* ]]; then
         $PKG_MANAGER install -y "$PACKAGE"
     elif [ "$OS" == "Fedora"* ]; then
@@ -1079,14 +1083,9 @@ install_command() {
         esac
     done
 
-    # Check if marzban is already installed
     if is_marzban_installed; then
-        colorized_echo red "Marzban is already installed at $APP_DIR"
-        read -p "Do you want to override the previous installation? (y/n) "
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            colorized_echo red "Aborted installation"
-            exit 1
-        fi
+        colorized_echo yellow "Marzban is already installed at $APP_DIR — overriding"
+        rm -rf "$APP_DIR"
     fi
     detect_os
     if ! command -v jq >/dev/null 2>&1; then
@@ -2263,12 +2262,12 @@ install_tblocker() {
 
     colorized_echo blue "Installing tblocker..."
     if [[ "$OS" == "Ubuntu"* ]] || [[ "$OS" == "Debian"* ]]; then
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-        DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg >/dev/null 2>&1
+        apt-get update -qq >/dev/null
+        apt-get install -y -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" curl gnupg >/dev/null 2>&1
         curl -s https://repo.remna.dev/xray-tools/public.gpg | gpg --yes --dearmor -o /usr/share/keyrings/openrepo-xray-tools.gpg >/dev/null 2>&1
         echo "deb [arch=any signed-by=/usr/share/keyrings/openrepo-xray-tools.gpg] https://repo.remna.dev/xray-tools/ stable main" > /etc/apt/sources.list.d/openrepo-xray-tools.list
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
-        DEBIAN_FRONTEND=noninteractive apt-get install -y tblocker >/dev/null
+        apt-get update -qq >/dev/null
+        apt-get install -y -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" tblocker >/dev/null
         colorized_echo green "tblocker installed from package repository"
     elif [[ "$OS" == "CentOS"* ]] || [[ "$OS" == "AlmaLinux"* ]] || [[ "$OS" == "Fedora"* ]]; then
         cat > /etc/yum.repos.d/xray-tools-rpm.repo << 'EOFREPO'
