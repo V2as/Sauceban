@@ -770,9 +770,7 @@ add_acme_volume() {
         return 0
     fi
 
-    local acme_dir="$ACME_DASH_DIR"
-
-    local volume_entry="${acme_dir}:${acme_dir}"
+    local volume_entry="${ACME_HOME}:${ACME_HOME}"
     if grep -qF "$volume_entry" "$MARZBAN_COMPOSE" 2>/dev/null; then
         log_info "Volume already present in docker-compose.yml"
         return 0

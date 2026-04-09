@@ -1904,6 +1904,7 @@ usage() {
     colorized_echo yellow "  tblocker-config $(tput sgr0)– Manage tblocker configuration"
     colorized_echo yellow "  log-clean       $(tput sgr0)– Schedule or run access log cleanup"
     colorized_echo yellow "  update-html     $(tput sgr0)– Update custom HTML templates (home & subscription)"
+    colorized_echo yellow "  fix-acme        $(tput sgr0)– Fix acme.sh volume in docker-compose (mount entire directory)"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -2926,6 +2927,53 @@ update_html_command() {
     colorized_echo cyan "Subscription page: $TEMPLATES_DIR/subscription/index.html"
 }
 
+fix_acme_command() {
+    local ACME_HOME="/root/.acme.sh"
+    local ACME_VOLUME="${ACME_HOME}:${ACME_HOME}"
+
+    check_running_as_root
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban is not installed!"
+        exit 1
+    fi
+
+    if [ ! -f "$COMPOSE_FILE" ]; then
+        colorized_echo red "docker-compose.yml not found at $COMPOSE_FILE"
+        exit 1
+    fi
+
+    if ! command -v yq >/dev/null 2>&1; then
+        install_yq
+    fi
+
+    local old_volumes
+    old_volumes=$(yq '.services.marzban.volumes[]' "$COMPOSE_FILE" 2>/dev/null | grep "^${ACME_HOME}/" || true)
+
+    if [ -n "$old_volumes" ]; then
+        colorized_echo blue "Removing old acme.sh sub-directory volumes..."
+        while IFS= read -r vol; do
+            [ -z "$vol" ] && continue
+            colorized_echo yellow "  removing: $vol"
+            yq -i "del(.services.marzban.volumes[] | select(. == \"$vol\"))" "$COMPOSE_FILE"
+        done <<< "$old_volumes"
+    fi
+
+    if grep -qF "$ACME_VOLUME" "$COMPOSE_FILE" 2>/dev/null; then
+        colorized_echo green "Volume ${ACME_VOLUME} already present — nothing to add."
+    else
+        colorized_echo blue "Adding volume: ${ACME_VOLUME}"
+        yq -i ".services.marzban.volumes += [\"${ACME_VOLUME}\"]" "$COMPOSE_FILE"
+        colorized_echo green "Volume added."
+    fi
+
+    colorized_echo blue "Restarting Marzban to apply changes..."
+    detect_compose
+    down_marzban
+    up_marzban
+    colorized_echo green "Marzban restarted with correct acme.sh volume."
+}
+
 case "$1" in
     up)
         shift; up_command "$@";;
@@ -2963,6 +3011,8 @@ case "$1" in
         shift; log_clean_command "$@";;
     update-html)
         shift; update_html_command "$@";;
+    fix-acme)
+        shift; fix_acme_command "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
