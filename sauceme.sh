@@ -3026,8 +3026,8 @@ fix_xray_json_extra_braces_command() {
 
     colorized_echo blue "Checking $xray_config ..."
 
-    local py_ec
-    python3 - "$xray_config" <<'PY'
+    local py_ec=0
+    python3 - "$xray_config" <<'PY' || py_ec=$?
 import json
 import shutil
 import sys
@@ -3056,7 +3056,6 @@ except json.JSONDecodeError as e:
             f.write("\n")
     sys.exit(4)  # fixed
 PY
-    py_ec=$?
 
     case "$py_ec" in
         0)
@@ -3081,13 +3080,10 @@ PY
     fi
 
     detect_compose
-    if ! is_marzban_up; then
-        colorized_echo yellow "Marzban stack was down; starting..."
-    fi
     colorized_echo blue "Restarting Marzban..."
-    down_marzban
-    up_marzban
-    colorized_echo green "Done."
+    down_marzban >/dev/null 2>&1
+    up_marzban >/dev/null 2>&1
+    colorized_echo green "Marzban restarted."
 }
 
 case "$1" in
