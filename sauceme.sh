@@ -1905,6 +1905,7 @@ usage() {
     colorized_echo yellow "  log-clean       $(tput sgr0)– Schedule or run access log cleanup"
     colorized_echo yellow "  update-html     $(tput sgr0)– Update custom HTML templates (home & subscription)"
     colorized_echo yellow "  fix-acme        $(tput sgr0)– Fix acme.sh volume in docker-compose (mount entire directory)"
+    colorized_echo yellow "  fix-xray-json   $(tput sgr0)– Fix trailing extra braces in xray_config.json and restart"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -2974,6 +2975,121 @@ fix_acme_command() {
     colorized_echo green "Marzban restarted with correct acme.sh volume."
 }
 
+# Truncate xray_config.json after the first valid top-level JSON value if the file has
+# trailing junk (e.g. duplicate `}` → json "Extra data" / jq "Unmatched '}'").
+fix_xray_json_extra_braces_command() {
+    check_running_as_root
+
+    local xray_config="${DATA_DIR}/xray_config.json"
+    local no_restart=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-restart)
+                no_restart=true
+                shift
+            ;;
+            -h|--help)
+                colorized_echo cyan "Usage: marzban fix-xray-json [options]"
+                echo ""
+                echo "Fixes a common corruption: extra closing brace(s) or garbage after valid JSON"
+                echo "in ${xray_config} (same error as: json Extra data / jq Unmatched '}')."
+                echo ""
+                echo "OPTIONS:"
+                echo "  --no-restart   Only fix the file, do not restart Marzban"
+                echo "  -h, --help     Show this help"
+                echo ""
+                echo "A backup is written to ${xray_config}.bak before changes."
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                exit 1
+            ;;
+        esac
+    done
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban is not installed!"
+        exit 1
+    fi
+
+    if [ ! -f "$xray_config" ]; then
+        colorized_echo red "Xray config not found: $xray_config"
+        exit 1
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        colorized_echo red "python3 is required."
+        exit 1
+    fi
+
+    colorized_echo blue "Checking $xray_config ..."
+
+    local py_ec
+    python3 - "$xray_config" <<'PY'
+import json
+import shutil
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    raw = f.read()
+
+try:
+    json.loads(raw)
+    sys.exit(0)  # already valid
+except json.JSONDecodeError as e:
+    if e.msg != "Extra data":
+        print(f"JSON error: {e.msg} (line {e.lineno}, col {e.colno})", file=sys.stderr)
+        sys.exit(2)
+    fixed = raw[: e.pos].rstrip()
+    try:
+        json.loads(fixed)
+    except json.JSONDecodeError as e2:
+        print(f"Truncate to first value failed: {e2.msg} (line {e2.lineno})", file=sys.stderr)
+        sys.exit(3)
+    shutil.copy2(path, path + ".bak")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(fixed)
+        if not fixed.endswith("\n"):
+            f.write("\n")
+    sys.exit(4)  # fixed
+PY
+    py_ec=$?
+
+    case "$py_ec" in
+        0)
+            colorized_echo green "JSON is already valid; nothing to change."
+            ;;
+        4)
+            colorized_echo green "Removed trailing extra data; backup: ${xray_config}.bak"
+            ;;
+        2|3)
+            colorized_echo red "Could not auto-fix xray_config.json. Fix the file manually or restore from .bak"
+            exit 1
+            ;;
+        *)
+            colorized_echo red "Unexpected error running Python fixer (exit $py_ec)."
+            exit 1
+            ;;
+    esac
+
+    if [ "$no_restart" = true ]; then
+        colorized_echo yellow "Skipped restart (--no-restart)."
+        return 0
+    fi
+
+    detect_compose
+    if ! is_marzban_up; then
+        colorized_echo yellow "Marzban stack was down; starting..."
+    fi
+    colorized_echo blue "Restarting Marzban..."
+    down_marzban
+    up_marzban
+    colorized_echo green "Done."
+}
+
 case "$1" in
     up)
         shift; up_command "$@";;
@@ -3013,6 +3129,8 @@ case "$1" in
         shift; update_html_command "$@";;
     fix-acme)
         shift; fix_acme_command "$@";;
+    fix-xray-json)
+        shift; fix_xray_json_extra_braces_command "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)

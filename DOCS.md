@@ -34,6 +34,7 @@ marzban <команда> [опции]
 - [log-clean](#log-clean) — Очистка access-лога по расписанию
 - [update-html](#update-html) — Обновление кастомных HTML-шаблонов
 - [fix-acme](#fix-acme) — Исправление volume acme.sh в docker-compose
+- [fix-xray-json](#fix-xray-json) — Лишние скобки в xray_config.json и перезапуск
 - [edit](#edit) — Редактирование docker-compose.yml
 - [edit-env](#edit-env) — Редактирование .env
 - [install-script](#install-script) — Установка скрипта marzban
@@ -658,6 +659,37 @@ marzban fix-acme
 3. Перезапускает Marzban для применения изменений
 
 > **Примечание:** Команда безопасна для повторного запуска — если volume уже исправлен, она просто перезапустит Marzban.
+
+---
+
+## fix-xray-json
+
+Исправляет типичную порчу файла `/var/lib/marzban/xray_config.json`: после корректного JSON остаётся «хвост» (часто лишняя `}`), из‑за чего панель падает с ошибками вроде `JSONDecodeError: Extra data` или `jq: Unmatched '}'`. Перед правкой создаётся резервная копия `xray_config.json.bak`, затем по умолчанию выполняется перезапуск Marzban.
+
+**Одноразовый запуск с GitHub (raw.githubusercontent.com), без установки скрипта:**
+
+```bash
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/sauceme.sh)" @ fix-xray-json
+```
+
+**Только исправить файл, без перезапуска контейнеров:**
+
+```bash
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/sauceme.sh)" @ fix-xray-json --no-restart
+```
+
+**Через уже установленный `marzban` (после `install-script`):**
+
+```bash
+sudo marzban fix-xray-json
+sudo marzban fix-xray-json --no-restart
+```
+
+| Опция | Описание |
+|---|---|
+| `--no-restart` | Не вызывать `down`/`up` compose после исправления файла |
+
+> **Ограничение:** автоматически обрабатывается только ошибка вида «лишние данные после первого JSON-объекта». Остальные синтаксические ошибки нужно править вручную или восстанавливать из `.bak`.
 
 ---
 
