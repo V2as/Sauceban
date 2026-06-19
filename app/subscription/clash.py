@@ -255,6 +255,8 @@ class ClashConfiguration(object):
 
     def add(self, remark: str, address: str, inbound: dict, settings: dict):
         # not supported by clash
+        if inbound['protocol'] == 'hysteria':
+            return
         if inbound['network'] in ("kcp", "splithttp", "xhttp"):
             return
 
@@ -346,6 +348,8 @@ class ClashMetaConfiguration(ClashConfiguration):
 
     def add(self, remark: str, address: str, inbound: dict, settings: dict):
         # not supported by clash-meta
+        if inbound['protocol'] == 'hysteria':
+            return
         if inbound['network'] in ("kcp", "splithttp", "xhttp") or (inbound['network'] == "quic" and inbound["header_type"] != "none"):
             return
 

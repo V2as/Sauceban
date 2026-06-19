@@ -995,6 +995,52 @@ class V2rayJsonConfig(str):
                                           tls_settings=tls_settings,
                                           sockopt=sockopt)
 
+    def add_hysteria(self, remark: str, address: str, port: int, inbound: dict):
+        version = inbound.get("hysteria_version", 2)
+
+        tls_settings = {"serverName": inbound.get("sni", "")}
+
+        alpn = inbound.get("alpn") or inbound.get("hysteria_alpn")
+        if isinstance(alpn, str):
+            alpn = [a.strip() for a in alpn.split(",") if a.strip()]
+        tls_settings["alpn"] = alpn if alpn else ["h3"]
+
+        if inbound.get("ais"):
+            tls_settings["allowInsecure"] = True
+
+        stream_settings = {
+            "network": "hysteria",
+            "security": "tls",
+            "tlsSettings": tls_settings,
+            "hysteriaSettings": {
+                "version": version,
+                "auth": inbound.get("auth", ""),
+            },
+        }
+
+        quic_params = {}
+        if inbound.get("congestion"):
+            quic_params["congestion"] = inbound["congestion"]
+        if inbound.get("brutalUp"):
+            quic_params["brutalUp"] = inbound["brutalUp"]
+        if inbound.get("brutalDown"):
+            quic_params["brutalDown"] = inbound["brutalDown"]
+        if quic_params:
+            stream_settings["finalmask"] = {"quicParams": quic_params}
+
+        outbound = {
+            "tag": "proxy",
+            "protocol": "hysteria",
+            "settings": {
+                "address": address,
+                "port": port,
+                "version": version,
+            },
+            "streamSettings": stream_settings,
+        }
+
+        self.add_config(remarks=remark, outbounds=[outbound])
+
     def add(self, remark: str, address: str, inbound: dict, settings: dict):
 
         net = inbound['network']
@@ -1003,6 +1049,10 @@ class V2rayJsonConfig(str):
         if isinstance(port, str):
             ports = port.split(',')
             port = int(choice(ports))
+
+        if protocol == 'hysteria':
+            self.add_hysteria(remark=remark, address=address, port=port, inbound=inbound)
+            return
 
         tls = (inbound['tls'])
         headers = inbound['header_type']

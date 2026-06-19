@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.utils.system import random_password
 from xray_api.types.account import (
+    HysteriaAccount,
     ShadowsocksAccount,
     ShadowsocksMethods,
     TrojanAccount,
@@ -29,6 +30,7 @@ class ProxyTypes(str, Enum):
     VLESS = "vless"
     Trojan = "trojan"
     Shadowsocks = "shadowsocks"
+    Hysteria = "hysteria"
 
     @property
     def account_model(self):
@@ -40,6 +42,8 @@ class ProxyTypes(str, Enum):
             return TrojanAccount
         if self == self.Shadowsocks:
             return ShadowsocksAccount
+        if self == self.Hysteria:
+            return HysteriaAccount
 
     @property
     def settings_model(self):
@@ -51,6 +55,8 @@ class ProxyTypes(str, Enum):
             return TrojanSettings
         if self == self.Shadowsocks:
             return ShadowsocksSettings
+        if self == self.Hysteria:
+            return HysteriaSettings
 
 
 class ProxySettings(BaseModel, use_enum_values=True):
@@ -93,6 +99,16 @@ class ShadowsocksSettings(ProxySettings):
 
     def revoke(self):
         self.password = random_password()
+
+
+class HysteriaSettings(ProxySettings):
+    # Hysteria (this Xray fork variant) authenticates with a single shared
+    # "auth" defined on the inbound's streamSettings, so there is no per-user
+    # secret to store or revoke. The empty settings object keeps Hysteria
+    # compatible with the rest of the per-user proxy machinery.
+
+    def revoke(self):
+        pass
 
 
 class ProxyHostSecurity(str, Enum):

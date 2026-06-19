@@ -76,3 +76,15 @@ class ShadowsocksAccount(Account):
     @property
     def message(self):
         return Message(ShadowsocksAccountPb2(password=self.password, cipher_type=self.cipher_type))
+
+
+class HysteriaAccount(Account):
+    # Hysteria authenticates with a single shared "auth" on the inbound and has
+    # no per-user gRPC account, so it is never registered through the Xray
+    # HandlerService. This placeholder exists only to satisfy the proxy-type
+    # account_model contract; `message` must never be used for Hysteria.
+    @property
+    def message(self):
+        raise NotImplementedError(
+            "Hysteria does not support per-user accounts via the Xray API"
+        )

@@ -289,6 +289,8 @@ class SingBoxConfiguration(str):
         path = inbound["path"]
 
         # not supported by sing-box
+        if inbound["protocol"] == "hysteria":
+            return
         if net in ("kcp", "splithttp", "xhttp") or (net == "quic" and inbound["header_type"] != "none"):
             return
 

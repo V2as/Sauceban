@@ -122,6 +122,7 @@ const getDefaultValues = (): FormType => {
       vmess: { id: "" },
       trojan: { password: "" },
       shadowsocks: { password: "", method: "chacha20-ietf-poly1305" },
+      hysteria: {},
     },
   };
 };
@@ -744,6 +745,10 @@ export const UserDialog: FC<UserDialogProps> = () => {
                               {
                                 title: "shadowsocks",
                                 description: t("userDialog.shadowsocksDesc"),
+                              },
+                              {
+                                title: "hysteria",
+                                description: t("userDialog.hysteriaDesc"),
                               },
                             ]}
                             disabled={disabled}

@@ -32,12 +32,16 @@ class XRayConfig(dict):
                  api_host: str = "127.0.0.1",
                  api_port: int = 8080):
         if isinstance(config, str):
-            try:
-                # considering string as json
-                config = commentjson.loads(config)
-            except (json.JSONDecodeError, ValueError):
-                # considering string as file path
-                with open(config, 'r') as file:
+            s = config.strip()
+            # Env usually holds a file path; avoid parsing "/var/..." as JSON (noisy lark errors).
+            if s.startswith(('{', '[')):
+                try:
+                    config = commentjson.loads(s)
+                except (json.JSONDecodeError, ValueError):
+                    with open(s, 'r') as file:
+                        config = commentjson.loads(file.read())
+            else:
+                with open(s, 'r') as file:
                     config = commentjson.loads(file.read())
 
         if isinstance(config, PosixPath):
@@ -150,8 +154,11 @@ class XRayConfig(dict):
 
             if not inbound.get('settings'):
                 inbound['settings'] = {}
-            if not inbound['settings'].get('clients'):
-                inbound['settings']['clients'] = []
+            # Hysteria authenticates with a single shared "auth" and has no
+            # per-user "clients" array, so leave its settings untouched.
+            if inbound['protocol'] != ProxyTypes.Hysteria.value:
+                if not inbound['settings'].get('clients'):
+                    inbound['settings']['clients'] = []
 
             settings = {
                 "tag": inbound["tag"],
@@ -197,7 +204,13 @@ class XRayConfig(dict):
                     # settings['fp']
                     # settings['alpn']
                     settings['tls'] = 'tls'
-                    for certificate in tls_settings.get('certificates', []):
+                    # Hysteria clients connect using the inbound's serverName as
+                    # SNI rather than the certificate SANs, so skip reading the
+                    # certificate files (which may not even exist on the panel
+                    # host) and let the Hysteria branch below set the SNI.
+                    for certificate in (
+                        [] if net == 'hysteria' else tls_settings.get('certificates', [])
+                    ):
 
                         if certificate.get("certificateFile", None):
                             with open(certificate['certificateFile'], 'rb') as file:
@@ -325,6 +338,29 @@ class XRayConfig(dict):
                     settings['host'] = net_settings.get('host') or net_settings.get('Host', '')
                     settings['path'] = net_settings.get('path', '')
 
+                elif net == 'hysteria':
+                    # net_settings is hysteriaSettings here
+                    settings['auth'] = net_settings.get('auth', '')
+                    settings['hysteria_version'] = net_settings.get(
+                        'version', inbound.get('settings', {}).get('version', 2))
+
+                    finalmask = stream.get('finalmask', {})
+                    quic_params = finalmask.get('quicParams', {})
+                    settings['congestion'] = quic_params.get('congestion', '')
+                    settings['brutalUp'] = quic_params.get('brutalUp', '')
+                    settings['brutalDown'] = quic_params.get('brutalDown', '')
+
+                    # serverName is the SNI the client must present.
+                    if tls_settings:
+                        server_name = tls_settings.get('serverName')
+                        if server_name:
+                            settings['sni'] = [server_name]
+
+                        alpn = tls_settings.get('alpn')
+                        if alpn:
+                            settings['hysteria_alpn'] = alpn if isinstance(
+                                alpn, list) else [alpn]
+
                 else:
                     settings['path'] = net_settings.get('path', '')
                     host = net_settings.get(
@@ -394,6 +430,11 @@ class XRayConfig(dict):
                 ))
 
             for proxy_type, rows in grouped_data.items():
+
+                # Hysteria uses a shared inbound "auth" instead of per-user
+                # clients, so there is nothing to inject into its settings.
+                if proxy_type == ProxyTypes.Hysteria.value:
+                    continue
 
                 inbounds = self.inbounds_by_protocol.get(proxy_type)
                 if not inbounds:
