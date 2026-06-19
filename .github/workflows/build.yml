@@ -13,6 +13,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Get app version
+        id: appversion
+        run: echo "version=$(sed -n 's/^__version__ *= *\"\([^\"]*\)\".*/\1/p' app/__init__.py)" >> "$GITHUB_OUTPUT"
+
       - name: Setup nodejs
         uses: actions/setup-node@v4
         with:
@@ -50,6 +54,7 @@ jobs:
           push: true
           tags: |
             v2as/sauceban:latest
+            v2as/sauceban:${{ steps.appversion.outputs.version }}
             ${{ github.ref_type == 'tag' && format('v2as/sauceban:{0}', github.ref_name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
