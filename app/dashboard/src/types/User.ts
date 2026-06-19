@@ -29,7 +29,14 @@ export type ProxyType = {
     password?: string;
     method?: string;
   };
-  hysteria?: Record<string, never>;
+  // Hysteria has no per-user settings (shared inbound auth). Keep an optional
+  // empty-ish object that stays compatible with the merged proxy value type.
+  hysteria?: {
+    id?: string;
+    flow?: string;
+    password?: string;
+    method?: string;
+  };
 };
 
 export type DataLimitResetStrategy =
