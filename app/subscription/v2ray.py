@@ -155,6 +155,17 @@ class V2rayShareLink(str):
                 password=settings["password"],
                 method=settings["method"],
             )
+
+        elif inbound["protocol"] == "hysteria":
+            link = self.hysteria(
+                remark=remark,
+                address=address,
+                port=inbound["port"],
+                auth=settings["auth"],
+                sni=inbound.get("sni", ""),
+                alpn=inbound.get("alpn", "") or inbound.get("hysteria_alpn", ""),
+                ais=inbound.get("ais", ""),
+            )
         else:
             return
 
@@ -494,6 +505,23 @@ class V2rayShareLink(str):
             "ss://"
             + base64.b64encode(f"{method}:{password}".encode()).decode()
             + f"@{address}:{port}#{urlparse.quote(remark)}"
+        )
+
+    @classmethod
+    def hysteria(cls, remark: str, address: str, port: int, auth: str,
+                 sni: str = "", alpn: Union[str, list] = "", ais="") -> str:
+        payload = {}
+        if sni:
+            payload["sni"] = sni
+        if alpn:
+            payload["alpn"] = alpn if isinstance(alpn, str) else ",".join(alpn)
+        payload["insecure"] = 1 if ais else 0
+
+        return (
+            "hysteria2://"
+            + f"{urlparse.quote(str(auth), safe='')}@{address}:{port}?"
+            + urlparse.urlencode(payload)
+            + f"#{urlparse.quote(remark)}"
         )
 
 
@@ -995,7 +1023,7 @@ class V2rayJsonConfig(str):
                                           tls_settings=tls_settings,
                                           sockopt=sockopt)
 
-    def add_hysteria(self, remark: str, address: str, port: int, inbound: dict):
+    def add_hysteria(self, remark: str, address: str, port: int, inbound: dict, settings: dict):
         version = inbound.get("hysteria_version", 2)
 
         tls_settings = {"serverName": inbound.get("sni", "")}
@@ -1008,13 +1036,17 @@ class V2rayJsonConfig(str):
         if inbound.get("ais"):
             tls_settings["allowInsecure"] = True
 
+        # Per-user auth comes from the user's proxy settings; fall back to the
+        # inbound-level auth only if the user somehow has none.
+        auth = settings.get("auth") or inbound.get("auth", "")
+
         stream_settings = {
             "network": "hysteria",
             "security": "tls",
             "tlsSettings": tls_settings,
             "hysteriaSettings": {
                 "version": version,
-                "auth": inbound.get("auth", ""),
+                "auth": auth,
             },
         }
 
@@ -1051,7 +1083,7 @@ class V2rayJsonConfig(str):
             port = int(choice(ports))
 
         if protocol == 'hysteria':
-            self.add_hysteria(remark=remark, address=address, port=port, inbound=inbound)
+            self.add_hysteria(remark=remark, address=address, port=port, inbound=inbound, settings=settings)
             return
 
         tls = (inbound['tls'])

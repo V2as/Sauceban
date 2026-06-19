@@ -9,6 +9,7 @@ from ..proto.proxy.shadowsocks.config_pb2 import \
     Account as ShadowsocksAccountPb2
 from ..proto.proxy.shadowsocks.config_pb2 import \
     CipherType as ShadowsocksCiphers
+from ..proto.proxy.hysteria.account_pb2 import Account as HysteriaAccountPb2
 from ..proto.proxy.trojan.config_pb2 import Account as TrojanAccountPb2
 from ..proto.proxy.vless.account_pb2 import Account as VLESSAccountPb2
 from ..proto.proxy.vmess.account_pb2 import Account as VMessAccountPb2
@@ -79,12 +80,12 @@ class ShadowsocksAccount(Account):
 
 
 class HysteriaAccount(Account):
-    # Hysteria authenticates with a single shared "auth" on the inbound and has
-    # no per-user gRPC account, so it is never registered through the Xray
-    # HandlerService. This placeholder exists only to satisfy the proxy-type
-    # account_model contract; `message` must never be used for Hysteria.
+    # Hysteria 2 authenticates each user with a single "auth" string. Per-user
+    # users are registered on the inbound just like other protocols, both via
+    # the static config (settings.clients[].auth) and at runtime through the
+    # Xray HandlerService (xray.proxy.hysteria.account.Account).
+    auth: str
+
     @property
     def message(self):
-        raise NotImplementedError(
-            "Hysteria does not support per-user accounts via the Xray API"
-        )
+        return Message(HysteriaAccountPb2(auth=self.auth))

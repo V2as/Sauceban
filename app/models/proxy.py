@@ -102,13 +102,13 @@ class ShadowsocksSettings(ProxySettings):
 
 
 class HysteriaSettings(ProxySettings):
-    # Hysteria (this Xray fork variant) authenticates with a single shared
-    # "auth" defined on the inbound's streamSettings, so there is no per-user
-    # secret to store or revoke. The empty settings object keeps Hysteria
-    # compatible with the rest of the per-user proxy machinery.
+    # Hysteria 2 authenticates a user with a single "auth" string (any length).
+    # It is stored per-user and injected as settings.clients[].auth on the
+    # inbound, mirroring how Trojan/Shadowsocks store a per-user password.
+    auth: str = Field(default_factory=random_password)
 
     def revoke(self):
-        pass
+        self.auth = random_password()
 
 
 class ProxyHostSecurity(str, Enum):

@@ -45,16 +45,6 @@ def get_subscription_user_info(user: UserResponse) -> dict:
     }
 
 
-def user_requires_json_subscription(user: UserResponse) -> bool:
-    """Whether the user has a proxy that can only be delivered via JSON (e.g. Hysteria).
-
-    Such protocols have no base64 share-link representation, so the default
-    subscription must fall back to the v2ray-json format for them to appear.
-    """
-    # ProxyTypes is a str-Enum, so a plain string lookup matches enum keys too.
-    return "hysteria" in user.proxies
-
-
 @router.get("/{token}/")
 @router.get("/{token}", include_in_schema=False)
 def user_subscription(
@@ -87,12 +77,6 @@ def user_subscription(
             for key, val in get_subscription_user_info(user).items()
         )
     }
-
-    # Protocols like Hysteria only exist in the v2ray-json format (no base64
-    # share-link), so force JSON for these users regardless of the user agent.
-    if user_requires_json_subscription(user):
-        conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False)
-        return Response(content=conf, media_type="application/json", headers=response_headers)
 
     if re.match(r'^([Cc]lash-verge|[Cc]lash[-\.]?[Mm]eta|[Ff][Ll][Cc]lash|[Mm]ihomo)', user_agent):
         conf = generate_subscription(user=user, config_format="clash-meta", as_base64=False, reverse=False)

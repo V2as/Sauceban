@@ -154,11 +154,11 @@ class XRayConfig(dict):
 
             if not inbound.get('settings'):
                 inbound['settings'] = {}
-            # Hysteria authenticates with a single shared "auth" and has no
-            # per-user "clients" array, so leave its settings untouched.
-            if inbound['protocol'] != ProxyTypes.Hysteria.value:
-                if not inbound['settings'].get('clients'):
-                    inbound['settings']['clients'] = []
+            # Hysteria 2 accepts per-user entries under "clients" (legacy name,
+            # equivalent to "users"), so it is handled like every other
+            # protocol and gets a clients array to inject per-user auth into.
+            if not inbound['settings'].get('clients'):
+                inbound['settings']['clients'] = []
 
             settings = {
                 "tag": inbound["tag"],
@@ -430,11 +430,6 @@ class XRayConfig(dict):
                 ))
 
             for proxy_type, rows in grouped_data.items():
-
-                # Hysteria uses a shared inbound "auth" instead of per-user
-                # clients, so there is nothing to inject into its settings.
-                if proxy_type == ProxyTypes.Hysteria.value:
-                    continue
 
                 inbounds = self.inbounds_by_protocol.get(proxy_type)
                 if not inbounds:

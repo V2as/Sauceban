@@ -6,7 +6,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from app import logger, xray
 from app.db import GetDB, crud
 from app.models.node import NodeStatus
-from app.models.proxy import ProxyTypes
 from app.models.user import UserResponse
 from app.utils.concurrency import threaded_function
 from app.xray.node import XRayNode
@@ -62,9 +61,6 @@ def add_user(dbuser: "DBUser"):
     email = f"{dbuser.id}.{dbuser.username}"
 
     for proxy_type, inbound_tags in user.inbounds.items():
-        # Hysteria has no per-user gRPC account (shared inbound auth).
-        if proxy_type == ProxyTypes.Hysteria:
-            continue
         for inbound_tag in inbound_tags:
             inbound = xray.config.inbounds_by_tag.get(inbound_tag, {})
 
@@ -110,11 +106,6 @@ def update_user(dbuser: "DBUser"):
 
     active_inbounds = []
     for proxy_type, inbound_tags in user.inbounds.items():
-        # Hysteria has no per-user gRPC account (shared inbound auth). Mark its
-        # inbounds active so the cleanup loop below doesn't try to remove them.
-        if proxy_type == ProxyTypes.Hysteria:
-            active_inbounds.extend(inbound_tags)
-            continue
         for inbound_tag in inbound_tags:
             active_inbounds.append(inbound_tag)
             inbound = xray.config.inbounds_by_tag.get(inbound_tag, {})
