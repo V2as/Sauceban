@@ -165,6 +165,8 @@ class V2rayShareLink(str):
                 sni=inbound.get("sni", ""),
                 alpn=inbound.get("alpn", "") or inbound.get("hysteria_alpn", ""),
                 ais=inbound.get("ais", ""),
+                obfs=inbound.get("obfs", ""),
+                obfs_password=inbound.get("obfs_password", ""),
             )
         else:
             return
@@ -509,13 +511,21 @@ class V2rayShareLink(str):
 
     @classmethod
     def hysteria(cls, remark: str, address: str, port: int, auth: str,
-                 sni: str = "", alpn: Union[str, list] = "", ais="") -> str:
+                 sni: str = "", alpn: Union[str, list] = "", ais="",
+                 obfs: str = "", obfs_password: str = "") -> str:
         payload = {}
         if sni:
             payload["sni"] = sni
         if alpn:
             payload["alpn"] = alpn if isinstance(alpn, str) else ",".join(alpn)
         payload["insecure"] = 1 if ais else 0
+        # Obfuscation is carried via the hysteria2 URI scheme keys
+        # ("obfs"/"obfs-password"); these are NOT part of the Xray docs, only
+        # the server-side finalmask.udp.salamander is.
+        if obfs:
+            payload["obfs"] = obfs
+            if obfs_password:
+                payload["obfs-password"] = obfs_password
 
         return (
             "hysteria2://"
@@ -1050,6 +1060,7 @@ class V2rayJsonConfig(str):
             },
         }
 
+        finalmask = {}
         quic_params = {}
         if inbound.get("congestion"):
             quic_params["congestion"] = inbound["congestion"]
@@ -1058,7 +1069,18 @@ class V2rayJsonConfig(str):
         if inbound.get("brutalDown"):
             quic_params["brutalDown"] = inbound["brutalDown"]
         if quic_params:
-            stream_settings["finalmask"] = {"quicParams": quic_params}
+            finalmask["quicParams"] = quic_params
+
+        # Mirror the server's Salamander obfuscation onto the client outbound
+        # (Xray docs: transports/finalmask -> UDPMask -> salamander).
+        if inbound.get("obfs") == "salamander":
+            salamander = {"password": inbound.get("obfs_password", "")}
+            if inbound.get("obfs_packet_size"):
+                salamander["packetSize"] = inbound["obfs_packet_size"]
+            finalmask["udp"] = [{"type": "salamander", "settings": salamander}]
+
+        if finalmask:
+            stream_settings["finalmask"] = finalmask
 
         outbound = {
             "tag": "proxy",

@@ -356,6 +356,17 @@ class XRayConfig(dict):
                     settings['brutalUp'] = quic_params.get('brutalUp', '')
                     settings['brutalDown'] = quic_params.get('brutalDown', '')
 
+                    # Salamander obfuscation lives in finalmask.udp (Xray docs:
+                    # transports/finalmask -> UDPMask -> salamander). Extract it
+                    # so subscriptions can advertise it to the client.
+                    for mask in finalmask.get('udp', []):
+                        if mask.get('type') == 'salamander':
+                            obfs_settings = mask.get('settings', {})
+                            settings['obfs'] = 'salamander'
+                            settings['obfs_password'] = obfs_settings.get('password', '')
+                            settings['obfs_packet_size'] = obfs_settings.get('packetSize', '')
+                            break
+
                     # serverName is the SNI the client must present.
                     if tls_settings:
                         server_name = tls_settings.get('serverName')
