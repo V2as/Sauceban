@@ -23,6 +23,57 @@
         "clients": [],
         "network": "tcp,udp"
       }
+    },
+    {
+      // Hysteria 2 inbound. Per-user "auth" is injected by Marzban into
+      // settings.users[] (UserObject из официальной документации Xray).
+      "tag": "Hysteria2",
+      "listen": "0.0.0.0",
+      // UDP-порт, который слушает сервер. Меняйте при необходимости.
+      "port": 8443,
+      "protocol": "hysteria",
+      "settings": {
+        // Версия Hysteria, по документации должна быть 2.
+        "version": 2,
+        // Пользователи добавляются панелью; держите массив пустым в шаблоне.
+        "users": []
+      },
+      "streamSettings": {
+        // Транспорт Hysteria (QUIC).
+        "network": "hysteria",
+        // QUIC требует TLS; tls официально сочетается с Hysteria.
+        "security": "tls",
+        "tlsSettings": {
+          // SNI, который должен предъявлять клиент. ОБЯЗАТЕЛЬНО замените
+          // на ваш домен (должен совпадать с SAN сертификата).
+          "serverName": "your.domain.com",
+          // ALPN для HTTP/3 (QUIC).
+          "alpn": [
+            "h3"
+          ],
+          "certificates": [
+            {
+              // Замените на реальные пути к fullchain-сертификату и ключу.
+              "certificateFile": "/var/lib/marzban/certs/your.domain.com/fullchain.pem",
+              "keyFile": "/var/lib/marzban/certs/your.domain.com/privkey.pem"
+            }
+          ]
+        },
+        "hysteriaSettings": {
+          // Версия Hysteria, по документации должна быть 2.
+          "version": 2
+        },
+        "finalmask": {
+          // Тюнинг QUIC. Для Hysteria congestion по умолчанию brutal.
+          "quicParams": {
+            "congestion": "brutal",
+            // 0 = не ограничивать скорость, которую выбирает клиент.
+            // Иначе значение не ниже 65535 bps (напр. "100 mbps").
+            "brutalUp": 0,
+            "brutalDown": 0
+          }
+        }
+      }
     }
   ],
   "outbounds": [
