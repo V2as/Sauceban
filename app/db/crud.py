@@ -20,6 +20,7 @@ from app.db.models import (
     NodeUsage,
     NodeUserUsage,
     NotificationReminder,
+    NotificationScheduler,
     Proxy,
     ProxyHost,
     ProxyInbound,
@@ -40,6 +41,10 @@ from app.models.user import (
     UserResponse,
     UserStatus,
     UserUsageResponse,
+)
+from app.models.notification_scheduler import (
+    NotificationSchedulerCreate,
+    NotificationSchedulerModify,
 )
 from app.models.user_template import UserTemplateCreate, UserTemplateModify
 from app.utils.helpers import calculate_expiration_days, calculate_usage_percent
@@ -1498,3 +1503,83 @@ def count_online_users(db: Session, hours: int = 24):
     query = db.query(func.count(User.id)).filter(User.online_at.isnot(
         None), User.online_at >= twenty_four_hours_ago)
     return query.scalar()
+
+
+# ---------------------------------------------------------------------------
+# Notification schedulers (push-statistics webhooks)
+# ---------------------------------------------------------------------------
+
+def get_notification_schedulers(db: Session) -> List[NotificationScheduler]:
+    """Return all configured push-statistics schedulers."""
+    return db.query(NotificationScheduler).order_by(NotificationScheduler.id).all()
+
+
+def get_notification_scheduler(db: Session, scheduler_id: int) -> Optional[NotificationScheduler]:
+    """Return a single scheduler by its id (or None)."""
+    return db.query(NotificationScheduler).filter(
+        NotificationScheduler.id == scheduler_id
+    ).first()
+
+
+def create_notification_scheduler(
+    db: Session, scheduler: NotificationSchedulerCreate
+) -> NotificationScheduler:
+    """Create a new push-statistics scheduler."""
+    dbscheduler = NotificationScheduler(
+        name=scheduler.name,
+        webhook_url=scheduler.webhook_url,
+        secret_key=scheduler.secret_key or None,
+        interval=scheduler.interval,
+        is_enabled=scheduler.is_enabled,
+        include_users=scheduler.include_users,
+        last_status="pending" if scheduler.is_enabled else None,
+    )
+    db.add(dbscheduler)
+    db.commit()
+    db.refresh(dbscheduler)
+    return dbscheduler
+
+
+def update_notification_scheduler(
+    db: Session,
+    dbscheduler: NotificationScheduler,
+    modify: NotificationSchedulerModify,
+) -> NotificationScheduler:
+    """Partially update an existing scheduler."""
+    data = modify.model_dump(exclude_unset=True)
+    for field in ("name", "webhook_url", "interval", "is_enabled", "include_users"):
+        if field in data and data[field] is not None:
+            setattr(dbscheduler, field, data[field])
+    if "secret_key" in data:
+        dbscheduler.secret_key = data["secret_key"] or None
+
+    db.commit()
+    db.refresh(dbscheduler)
+    return dbscheduler
+
+
+def delete_notification_scheduler(db: Session, dbscheduler: NotificationScheduler) -> None:
+    """Delete a scheduler."""
+    db.delete(dbscheduler)
+    db.commit()
+
+
+def record_notification_scheduler_run(
+    db: Session,
+    scheduler_id: int,
+    success: bool,
+    status_code: Optional[int] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Persist the outcome of a push attempt for a scheduler."""
+    dbscheduler = get_notification_scheduler(db, scheduler_id)
+    if not dbscheduler:
+        return
+    dbscheduler.last_run_at = datetime.utcnow()
+    dbscheduler.last_status = "success" if success else "failed"
+    dbscheduler.last_status_code = status_code
+    dbscheduler.last_error = (error or None) if not success else None
+    dbscheduler.total_runs = (dbscheduler.total_runs or 0) + 1
+    if not success:
+        dbscheduler.failed_runs = (dbscheduler.failed_runs or 0) + 1
+    db.commit()

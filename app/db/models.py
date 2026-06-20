@@ -350,3 +350,33 @@ class NotificationReminder(Base):
     threshold = Column(Integer, nullable=True)
     expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class NotificationScheduler(Base):
+    """A configurable scheduler that periodically pushes server/marzban
+    statistics to a webhook endpoint. Each scheduler is independent and can
+    have its own interval and secret key, allowing pushes to N webhooks."""
+
+    __tablename__ = "notification_schedulers"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), nullable=False)
+    webhook_url = Column(String(1024), nullable=False)
+    # secret used to authenticate/sign the webhook request (optional)
+    secret_key = Column(String(256), nullable=True, default=None)
+    # send interval in seconds
+    interval = Column(Integer, nullable=False, default=60, server_default=text("60"))
+    is_enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    # whether to include the full users list (with per-user traffic) in the payload
+    include_users = Column(Boolean, nullable=False, default=True, server_default="1")
+
+    # runtime status bookkeeping
+    last_run_at = Column(DateTime, nullable=True, default=None)
+    last_status = Column(String(16), nullable=True, default=None)  # success | failed | pending
+    last_status_code = Column(Integer, nullable=True, default=None)
+    last_error = Column(String(1024), nullable=True, default=None)
+    total_runs = Column(BigInteger, nullable=False, default=0, server_default="0")
+    failed_runs = Column(BigInteger, nullable=False, default=0, server_default="0")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

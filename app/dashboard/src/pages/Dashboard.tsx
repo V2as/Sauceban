@@ -7,6 +7,8 @@ import { Header } from "components/Header";
 import { HostsDialog } from "components/HostsDialog";
 import { NodesDialog } from "components/NodesModal";
 import { NodesUsage } from "components/NodesUsage";
+import { NotificationSettingsDialog } from "components/NotificationSettingsModal";
+import { DeleteSchedulerModal } from "components/DeleteSchedulerModal";
 import { QRCodeDialog } from "components/QRCodeDialog";
 import { ResetAllUsageModal } from "components/ResetAllUsageModal";
 import { ResetUserUsageModal } from "components/ResetUserUsageModal";
@@ -39,6 +41,8 @@ export const Dashboard: FC = () => {
         <NodesUsage />
         <ResetAllUsageModal />
         <CoreSettingsModal />
+        <NotificationSettingsDialog />
+        <DeleteSchedulerModal />
       </Box>
       <Footer />
     </VStack>

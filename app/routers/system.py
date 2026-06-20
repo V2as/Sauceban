@@ -1,6 +1,7 @@
 from typing import Dict, List, Union
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 
 from app import __version__, xray
 from app.db import Session, crud, get_db
@@ -9,9 +10,22 @@ from app.models.proxy import ProxyHost, ProxyInbound, ProxyTypes
 from app.models.system import SystemStats
 from app.models.user import UserStatus
 from app.utils import responses
+from app.utils.metrics import collect_metrics, render_prometheus_text
 from app.utils.system import cpu_usage, memory_usage, realtime_bandwidth
 
 router = APIRouter(tags=["System"], prefix="/api", responses={401: responses._401})
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+def get_prometheus_metrics(admin: Admin = Depends(Admin.get_current)):
+    """Expose server + marzban metrics in the Prometheus text exposition format.
+
+    This is the pull-based counterpart to the push schedulers: point a
+    Prometheus scrape job at `/api/metrics` (with a bearer token) to ingest the
+    same metric set natively.
+    """
+    payload = collect_metrics(include_users=False)
+    return render_prometheus_text(payload)
 
 
 @router.get("/system", response_model=SystemStats)

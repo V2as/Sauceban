@@ -34,6 +34,8 @@
   "header.logout": "退出",
   "header.nodeSettings": "节点设置",
   "header.nodesUsage": "节点统计",
+  "header.notificationSettings": "通知设置",
+  "notifications.title": "通知设置",
   "hostsDialog.addHost": "添加主机",
   "hostsDialog.advancedOptions": "高级选项",
   "hostsDialog.allowinsecure": "允许不安全连接",
