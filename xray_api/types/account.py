@@ -82,8 +82,8 @@ class ShadowsocksAccount(Account):
 class HysteriaAccount(Account):
     # Hysteria 2 authenticates each user with a single "auth" string. Per-user
     # entries are registered on the inbound both via the static config
-    # (settings.users[].auth, per the official Xray docs) and at runtime through
-    # the Xray HandlerService (xray.proxy.hysteria.account.Account).
+    # (settings.clients[].auth) and at runtime through the Xray HandlerService
+    # (xray.proxy.hysteria.account.Account).
     auth: str
 
     @property

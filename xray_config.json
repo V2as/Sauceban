@@ -26,7 +26,9 @@
     },
     {
       // Hysteria 2 inbound. Per-user "auth" is injected by Marzban into
-      // settings.users[] (UserObject из официальной документации Xray).
+      // settings.clients[] (UserObject из официальной документации Xray;
+      // ключ "clients" совместим со старыми и новыми ядрами Xray, тогда как
+      // "users" работает только на ядрах новее v26.5.9).
       "tag": "Hysteria2",
       "listen": "0.0.0.0",
       // UDP-порт, который слушает сервер. Меняйте при необходимости.
@@ -36,7 +38,7 @@
         // Версия Hysteria, по документации должна быть 2.
         "version": 2,
         // Пользователи добавляются панелью; держите массив пустым в шаблоне.
-        "users": []
+        "clients": []
       },
       "streamSettings": {
         // Транспорт Hysteria (QUIC).

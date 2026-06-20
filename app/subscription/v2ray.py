@@ -511,9 +511,14 @@ class V2rayShareLink(str):
 
     @classmethod
     def hysteria(cls, remark: str, address: str, port: int, auth: str,
-                 sni: str = "", alpn: Union[str, list] = "", ais="",
+                 sni: Union[str, list] = "", alpn: Union[str, list] = "", ais="",
                  obfs: str = "", obfs_password: str = "") -> str:
         payload = {}
+        # The resolved inbound stores sni/alpn as lists; the hysteria2 URI
+        # expects plain strings, so collapse them (a list-repr like "['host']"
+        # would otherwise be sent as the SNI and break the TLS handshake).
+        if isinstance(sni, (list, tuple)):
+            sni = sni[0] if sni else ""
         if sni:
             payload["sni"] = sni
         if alpn:
@@ -1036,7 +1041,12 @@ class V2rayJsonConfig(str):
     def add_hysteria(self, remark: str, address: str, port: int, inbound: dict, settings: dict):
         version = inbound.get("hysteria_version", 2)
 
-        tls_settings = {"serverName": inbound.get("sni", "")}
+        # The resolved inbound stores sni as a list; Xray's tlsSettings.serverName
+        # must be a plain string, otherwise the generated client config is invalid.
+        sni = inbound.get("sni", "")
+        if isinstance(sni, (list, tuple)):
+            sni = sni[0] if sni else ""
+        tls_settings = {"serverName": sni}
 
         alpn = inbound.get("alpn") or inbound.get("hysteria_alpn")
         if isinstance(alpn, str):

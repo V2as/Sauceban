@@ -103,8 +103,9 @@ class ShadowsocksSettings(ProxySettings):
 
 class HysteriaSettings(ProxySettings):
     # Hysteria 2 authenticates a user with a single "auth" string (any length).
-    # It is stored per-user and injected as settings.users[].auth on the
-    # inbound (UserObject in the official Xray docs).
+    # It is stored per-user and injected as settings.clients[].auth on the
+    # inbound (UserObject in the official Xray docs; the "clients" key is the
+    # backward/forward-compatible alias for "users").
     auth: str = Field(default_factory=random_password)
 
     def revoke(self):
