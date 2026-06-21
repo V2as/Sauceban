@@ -150,7 +150,7 @@ JOB_SEND_NOTIFICATIONS_INTERVAL = config("JOB_SEND_NOTIFICATIONS_INTERVAL", cast
 # Push-metrics schedulers (webhook statistics)
 # Minimum allowed interval (in seconds) for a push scheduler, protects the
 # system from being overloaded with too frequent metric collection.
-PUSH_SCHEDULER_MIN_INTERVAL = config("PUSH_SCHEDULER_MIN_INTERVAL", cast=int, default=10)
+PUSH_SCHEDULER_MIN_INTERVAL = config("PUSH_SCHEDULER_MIN_INTERVAL", cast=int, default=5)
 # How often (in seconds) the manager reconciles APScheduler jobs with the
 # scheduler rows stored in the database (add/update/remove).
 JOB_SYNC_PUSH_SCHEDULERS_INTERVAL = config("JOB_SYNC_PUSH_SCHEDULERS_INTERVAL", cast=int, default=15)

@@ -11,7 +11,7 @@ export const NotificationSchedulerSchema = z.object({
   secret_key: z.string().nullable().optional(),
   interval: z
     .number()
-    .min(10)
+    .min(5)
     .or(z.string().transform((v) => parseInt(v, 10))),
   is_enabled: z.boolean(),
   include_users: z.boolean(),

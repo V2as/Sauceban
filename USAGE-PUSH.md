@@ -1,4 +1,4 @@
-# Push Statistics Webhooks (USAGE-PUSH)
+мне ан# Push Statistics Webhooks (USAGE-PUSH)
 
 This document describes the **push statistics** feature: configurable schedulers
 that periodically POST server and Marzban metrics (plus the full users list) to
@@ -34,7 +34,7 @@ A **scheduler** is an independent webhook target with its own settings:
 | `name` | Human readable label. |
 | `webhook_url` | The HTTP(S) endpoint that receives the push (`POST`). |
 | `secret_key` | Optional secret used to authenticate/sign the request. |
-| `interval` | Send interval in seconds (minimum `PUSH_SCHEDULER_MIN_INTERVAL`, default 10). |
+| `interval` | Send interval in seconds (minimum `PUSH_SCHEDULER_MIN_INTERVAL`, default 5). |
 | `is_enabled` | Enable/disable sending without deleting the scheduler. |
 | `include_users` | Whether the full users array is included in the payload. |
 
@@ -390,7 +390,7 @@ These optional environment variables tune the feature (sensible defaults shown):
 
 | Variable | Default | Description |
 |---|---|---|
-| `PUSH_SCHEDULER_MIN_INTERVAL` | `10` | Minimum allowed scheduler interval (seconds). |
+| `PUSH_SCHEDULER_MIN_INTERVAL` | `5` | Minimum allowed scheduler interval (seconds). |
 | `JOB_SYNC_PUSH_SCHEDULERS_INTERVAL` | `15` | How often live jobs are reconciled with the DB. |
 | `PUSH_METRICS_CACHE_TTL` | `2` | Seconds a metrics snapshot is reused across schedulers. |
 | `PUSH_WEBHOOK_TIMEOUT` | `15` | HTTP timeout (seconds) per webhook delivery. |
