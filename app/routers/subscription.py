@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 
 from app.db import Session, crud, get_db
 from app.dependencies import get_validated_sub, validate_dates
+from app.models.proxy import ProxyTypes
 from app.models.user import SubscriptionUserResponse, UserResponse
 from app.subscription.share import encode_title, generate_subscription
 from app.templates import render_template
@@ -33,6 +34,26 @@ client_config = {
 }
 
 router = APIRouter(tags=['Subscription'], prefix=f'/{XRAY_SUBSCRIPTION_PATH}')
+
+# Clients may not support every proxy protocol on older versions. Each rule maps
+# a User-Agent matcher to the maximum (inclusive) version that is affected and
+# the protocols that must be stripped from the generated subscription.
+BLACKTEMPLE_UA_PATTERN = re.compile(r'[Bb]lack[Tt]emple[/ ]?v?(\d+\.\d+(?:\.\d+)?)')
+
+
+def get_excluded_protocols(user_agent: str) -> list:
+    """Return the list of proxy protocols that must be excluded for the client.
+
+    Blacktemple versions up to and including 1.3.9 do not support Hysteria, so
+    Hysteria configurations are removed from their subscription output.
+    """
+    excluded = []
+
+    match = BLACKTEMPLE_UA_PATTERN.search(user_agent or "")
+    if match and LooseVersion(match.group(1)) <= LooseVersion("1.3.9"):
+        excluded.append(ProxyTypes.Hysteria)
+
+    return excluded
 
 
 def get_subscription_user_info(user: UserResponse) -> dict:
@@ -66,6 +87,7 @@ def user_subscription(
         )
 
     crud.update_user_sub(db, dbuser, user_agent)
+    excluded_protocols = get_excluded_protocols(user_agent)
     response_headers = {
         "content-disposition": f'attachment; filename="{user.username}"',
         "profile-web-page-url": str(request.url),
@@ -79,63 +101,77 @@ def user_subscription(
     }
 
     if re.match(r'^([Cc]lash-verge|[Cc]lash[-\.]?[Mm]eta|[Ff][Ll][Cc]lash|[Mm]ihomo)', user_agent):
-        conf = generate_subscription(user=user, config_format="clash-meta", as_base64=False, reverse=False)
+        conf = generate_subscription(user=user, config_format="clash-meta", as_base64=False, reverse=False,
+                                     exclude_protocols=excluded_protocols)
         return Response(content=conf, media_type="text/yaml", headers=response_headers)
 
     elif re.match(r'^([Cc]lash|[Ss]tash)', user_agent):
-        conf = generate_subscription(user=user, config_format="clash", as_base64=False, reverse=False)
+        conf = generate_subscription(user=user, config_format="clash", as_base64=False, reverse=False,
+                                     exclude_protocols=excluded_protocols)
         return Response(content=conf, media_type="text/yaml", headers=response_headers)
 
     elif re.match(r'^(SFA|SFI|SFM|SFT|[Kk]aring|[Hh]iddify[Nn]ext)', user_agent):
-        conf = generate_subscription(user=user, config_format="sing-box", as_base64=False, reverse=False)
+        conf = generate_subscription(user=user, config_format="sing-box", as_base64=False, reverse=False,
+                                     exclude_protocols=excluded_protocols)
         return Response(content=conf, media_type="application/json", headers=response_headers)
 
     elif re.match(r'^(SS|SSR|SSD|SSS|Outline|Shadowsocks|SSconf)', user_agent):
-        conf = generate_subscription(user=user, config_format="outline", as_base64=False, reverse=False)
+        conf = generate_subscription(user=user, config_format="outline", as_base64=False, reverse=False,
+                                     exclude_protocols=excluded_protocols)
         return Response(content=conf, media_type="application/json", headers=response_headers)
 
     elif (USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_V2RAYN) and re.match(r'^v2rayN/(\d+\.\d+)', user_agent):
         version_str = re.match(r'^v2rayN/(\d+\.\d+)', user_agent).group(1)
         if LooseVersion(version_str) >= LooseVersion("6.40"):
-            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
     elif (USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_V2RAYNG) and re.match(r'^v2rayNG/(\d+\.\d+\.\d+)', user_agent):
         version_str = re.match(r'^v2rayNG/(\d+\.\d+\.\d+)', user_agent).group(1)
         if LooseVersion(version_str) >= LooseVersion("1.8.29"):
-            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         elif LooseVersion(version_str) >= LooseVersion("1.8.18"):
-            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=True)
+            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=True,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
     elif re.match(r'^[Ss]treisand', user_agent):
         if USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_STREISAND:
-            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
     elif (USE_CUSTOM_JSON_DEFAULT or USE_CUSTOM_JSON_FOR_HAPP) and re.match(r'^Happ/(\d+\.\d+\.\d+)', user_agent):
         version_str = re.match(r'^Happ/(\d+\.\d+\.\d+)', user_agent).group(1)
         if LooseVersion(version_str) >= LooseVersion("1.63.1"):
-            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray-json", as_base64=False, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="application/json", headers=response_headers)
         else:
-            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False)
+            conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False,
+                                         exclude_protocols=excluded_protocols)
             return Response(content=conf, media_type="text/plain", headers=response_headers)
 
 
 
     else:
-        conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False)
+        conf = generate_subscription(user=user, config_format="v2ray", as_base64=True, reverse=False,
+                                     exclude_protocols=excluded_protocols)
         return Response(content=conf, media_type="text/plain", headers=response_headers)
 
 
@@ -189,6 +225,7 @@ def user_subscription_with_client_type(
     conf = generate_subscription(user=user,
                                  config_format=config["config_format"],
                                  as_base64=config["as_base64"],
-                                 reverse=config["reverse"])
+                                 reverse=config["reverse"],
+                                 exclude_protocols=get_excluded_protocols(user_agent))
 
     return Response(content=conf, media_type=config["media_type"], headers=response_headers)

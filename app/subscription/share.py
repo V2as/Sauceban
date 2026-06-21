@@ -44,14 +44,19 @@ STATUS_TEXTS = {
 }
 
 
-def generate_v2ray_links(proxies: dict, inbounds: dict, extra_data: dict, reverse: bool) -> list:
+def generate_v2ray_links(
+        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool, exclude_protocols: list = None
+) -> list:
     format_variables = setup_format_variables(extra_data)
     conf = V2rayShareLink()
-    return process_inbounds_and_tags(inbounds, proxies, format_variables, conf=conf, reverse=reverse)
+    return process_inbounds_and_tags(
+        inbounds, proxies, format_variables, conf=conf, reverse=reverse, exclude_protocols=exclude_protocols
+    )
 
 
 def generate_clash_subscription(
-        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool, is_meta: bool = False
+        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool,
+        is_meta: bool = False, exclude_protocols: list = None
 ) -> str:
     if is_meta is True:
         conf = ClashMetaConfiguration()
@@ -60,40 +65,40 @@ def generate_clash_subscription(
 
     format_variables = setup_format_variables(extra_data)
     return process_inbounds_and_tags(
-        inbounds, proxies, format_variables, conf=conf, reverse=reverse
+        inbounds, proxies, format_variables, conf=conf, reverse=reverse, exclude_protocols=exclude_protocols
     )
 
 
 def generate_singbox_subscription(
-        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool
+        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool, exclude_protocols: list = None
 ) -> str:
     conf = SingBoxConfiguration()
 
     format_variables = setup_format_variables(extra_data)
     return process_inbounds_and_tags(
-        inbounds, proxies, format_variables, conf=conf, reverse=reverse
+        inbounds, proxies, format_variables, conf=conf, reverse=reverse, exclude_protocols=exclude_protocols
     )
 
 
 def generate_outline_subscription(
-        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool,
+        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool, exclude_protocols: list = None
 ) -> str:
     conf = OutlineConfiguration()
 
     format_variables = setup_format_variables(extra_data)
     return process_inbounds_and_tags(
-        inbounds, proxies, format_variables, conf=conf, reverse=reverse
+        inbounds, proxies, format_variables, conf=conf, reverse=reverse, exclude_protocols=exclude_protocols
     )
 
 
 def generate_v2ray_json_subscription(
-        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool,
+        proxies: dict, inbounds: dict, extra_data: dict, reverse: bool, exclude_protocols: list = None
 ) -> str:
     conf = V2rayJsonConfig()
 
     format_variables = setup_format_variables(extra_data)
     return process_inbounds_and_tags(
-        inbounds, proxies, format_variables, conf=conf, reverse=reverse
+        inbounds, proxies, format_variables, conf=conf, reverse=reverse, exclude_protocols=exclude_protocols
     )
 
 
@@ -102,12 +107,14 @@ def generate_subscription(
         config_format: Literal["v2ray", "clash-meta", "clash", "sing-box", "outline", "v2ray-json"],
         as_base64: bool,
         reverse: bool,
+        exclude_protocols: list = None,
 ) -> str:
     kwargs = {
         "proxies": user.proxies,
         "inbounds": user.inbounds,
         "extra_data": user.__dict__,
         "reverse": reverse,
+        "exclude_protocols": exclude_protocols,
     }
 
     if config_format == "v2ray":
@@ -242,7 +249,16 @@ def process_inbounds_and_tags(
             OutlineConfiguration
         ],
         reverse=False,
+        exclude_protocols: list = None,
 ) -> Union[List, str]:
+    # Normalize the protocols that must be filtered out of the subscription
+    # (e.g. clients that don't support a given protocol for a certain version).
+    # ProxyTypes is a str-Enum, so we compare on the underlying string value to
+    # accept both enum members and plain strings.
+    excluded_protocols = {
+        getattr(p, "value", p) for p in (exclude_protocols or [])
+    }
+
     _inbounds = []
     for protocol, tags in inbounds.items():
         for tag in tags:
@@ -253,6 +269,9 @@ def process_inbounds_and_tags(
         _inbounds, key=lambda x: index_dict.get(x[1][0], float('inf')))
 
     for protocol, tags in inbounds:
+        if getattr(protocol, "value", protocol) in excluded_protocols:
+            continue
+
         settings = proxies.get(protocol)
         if not settings:
             continue
