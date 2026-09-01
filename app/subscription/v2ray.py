@@ -81,6 +81,7 @@ class V2rayShareLink(str):
                 heartbeatPeriod=inbound.get("heartbeatPeriod", 0),
                 keepAlivePeriod=inbound.get("keepAlivePeriod", 0),
                 xmux=inbound.get("xmux", {}),
+                xhttp_extra=inbound.get("xhttpExtra", {}),
             )
 
         elif inbound["protocol"] == "vless":
@@ -113,6 +114,7 @@ class V2rayShareLink(str):
                 heartbeatPeriod=inbound.get("heartbeatPeriod", 0),
                 keepAlivePeriod=inbound.get("keepAlivePeriod", 0),
                 xmux=inbound.get("xmux", {}),
+                xhttp_extra=inbound.get("xhttpExtra", {}),
             )
 
         elif inbound["protocol"] == "trojan":
@@ -145,6 +147,7 @@ class V2rayShareLink(str):
                 heartbeatPeriod=inbound.get("heartbeatPeriod", 0),
                 keepAlivePeriod=inbound.get("keepAlivePeriod", 0),
                 xmux=inbound.get("xmux", {}),
+                xhttp_extra=inbound.get("xhttpExtra", {}),
             )
 
         elif inbound["protocol"] == "shadowsocks":
@@ -203,6 +206,7 @@ class V2rayShareLink(str):
             heartbeatPeriod: int = 0,
             keepAlivePeriod: int = 0,
             xmux: dict = {},
+            xhttp_extra: dict = {},
     ):
         payload = {
             "add": address,
@@ -259,6 +263,8 @@ class V2rayShareLink(str):
             payload["type"] = mode
             if keepAlivePeriod > 0:
                 extra["keepAlivePeriod"] = keepAlivePeriod
+            if xhttp_extra:
+                extra.update(xhttp_extra)
             payload["extra"] = extra
 
         elif net == "ws":
@@ -302,6 +308,7 @@ class V2rayShareLink(str):
               heartbeatPeriod: int = 0,
               keepAlivePeriod: int = 0,
               xmux: dict = {},
+              xhttp_extra: dict = {},
               ):
 
         payload = {
@@ -340,6 +347,8 @@ class V2rayShareLink(str):
                 extra["keepAlivePeriod"] = keepAlivePeriod
             if xmux:
                 extra["xmux"] = xmux
+            if xhttp_extra:
+                extra.update(xhttp_extra)
             payload["extra"] = json.dumps(extra)
 
         elif net == 'kcp':
@@ -422,6 +431,7 @@ class V2rayShareLink(str):
                heartbeatPeriod: int = 0,
                keepAlivePeriod: int = 0,
                xmux: dict = {},
+               xhttp_extra: dict = {},
                ):
 
         payload = {
@@ -455,6 +465,8 @@ class V2rayShareLink(str):
                 extra["keepAlivePeriod"] = keepAlivePeriod
             if xmux:
                 extra["xmux"] = xmux
+            if xhttp_extra:
+                extra.update(xhttp_extra)
             payload["extra"] = json.dumps(extra)
 
         elif net == 'quic':
@@ -657,6 +669,7 @@ class V2rayJsonConfig(str):
                          mode: str = "auto",
                          noGRPCHeader: bool = False,
                          keepAlivePeriod: int = 0,
+                         xhttp_extra: dict = {},
                          ) -> dict:
         config = copy.deepcopy(self.settings.get("splithttpSettings", {}))
 
@@ -677,6 +690,8 @@ class V2rayJsonConfig(str):
             config["xmux"] = xmux
         if keepAlivePeriod > 0:
             config["keepAlivePeriod"] = keepAlivePeriod
+        if xhttp_extra:
+            config["extra"] = {**(config.get("extra") or {}), **xhttp_extra}
         # core will ignore unknown variables
 
         return config
@@ -981,6 +996,7 @@ class V2rayJsonConfig(str):
                             noGRPCHeader: bool = False,
                             heartbeatPeriod: int = 0,
                             keepAlivePeriod: int = 0,
+                            xhttp_extra: dict = {},
                             ) -> dict:
 
         if net == "ws":
@@ -1014,6 +1030,7 @@ class V2rayJsonConfig(str):
                                                     mode=mode,
                                                     noGRPCHeader=noGRPCHeader,
                                                     keepAlivePeriod=keepAlivePeriod,
+                                                    xhttp_extra=xhttp_extra,
                                                     )
         else:
             network_setting = {}
@@ -1196,6 +1213,7 @@ class V2rayJsonConfig(str):
             noGRPCHeader=inbound.get("noGRPCHeader", False),
             heartbeatPeriod=inbound.get("heartbeatPeriod", 0),
             keepAlivePeriod=inbound.get("keepAlivePeriod", 0),
+            xhttp_extra=inbound.get("xhttpExtra", {}),
         )
 
         mux_json = json.loads(self.mux_template)

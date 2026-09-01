@@ -326,6 +326,7 @@ class XRayConfig(dict):
                     settings["mode"] = net_settings.get("mode", "auto")
                     settings["noGRPCHeader"] = net_settings.get("noGRPCHeader", False)
                     settings["keepAlivePeriod"] = net_settings.get("keepAlivePeriod", 0)
+                    settings["xhttpExtra"] = net_settings.get("extra") or {}
 
                 elif net == 'kcp':
                     header = net_settings.get('header', {})
