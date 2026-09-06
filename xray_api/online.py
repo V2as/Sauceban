@@ -5,7 +5,13 @@ vendored `StatsService` stub only knows GetStats / QueryStats / GetSysStats.
 Xray-core later added per-user online-IP reporting:
 
     rpc GetStatsOnlineIpList(GetStatsRequest) returns (GetStatsOnlineIpListResponse)
+    rpc GetAllOnlineUsers(GetAllOnlineUsersRequest) returns (GetAllOnlineUsersResponse)
     rpc GetUsersStats(GetUsersStatsRequest) returns (GetUsersStatsResponse)
+
+Each landed in a different release, so a core may implement any prefix of that
+list: `GetStatsOnlineIpList` since v25.2.18, `GetAllOnlineUsers` since
+v25.12.1, `GetUsersStats` since v26.4.13. Missing ones answer UNIMPLEMENTED,
+which `stats.py` turns into `NotSupportedError`.
 
 Regenerating the vendored tree would rewrite every generated module and tie
 the panel to whatever protobuf runtime the new protoc emits for, so the few
@@ -34,6 +40,7 @@ _POOL = descriptor_pool.DescriptorPool()
 _STATS_SERVICE = "/xray.app.stats.command.StatsService"
 GET_USERS_STATS_METHOD = f"{_STATS_SERVICE}/GetUsersStats"
 GET_STATS_ONLINE_IP_LIST_METHOD = f"{_STATS_SERVICE}/GetStatsOnlineIpList"
+GET_ALL_ONLINE_USERS_METHOD = f"{_STATS_SERVICE}/GetAllOnlineUsers"
 
 _TYPES = descriptor_pb2.FieldDescriptorProto
 _SINGULAR = _TYPES.LABEL_OPTIONAL
@@ -97,6 +104,13 @@ def _build_file() -> descriptor_pb2.FileDescriptorProto:
     _add_field(users_response, "users", 1, _TYPES.TYPE_MESSAGE,
                label=_REPEATED, type_name="UserStat")
 
+    all_online_request = file.message_type.add()
+    all_online_request.name = "GetAllOnlineUsersRequest"
+
+    all_online_response = file.message_type.add()
+    all_online_response.name = "GetAllOnlineUsersResponse"
+    _add_field(all_online_response, "users", 1, _TYPES.TYPE_STRING, label=_REPEATED)
+
     return file
 
 
@@ -113,6 +127,8 @@ GetStatsRequest = _class("GetStatsRequest")
 GetStatsOnlineIpListResponse = _class("GetStatsOnlineIpListResponse")
 GetUsersStatsRequest = _class("GetUsersStatsRequest")
 GetUsersStatsResponse = _class("GetUsersStatsResponse")
+GetAllOnlineUsersRequest = _class("GetAllOnlineUsersRequest")
+GetAllOnlineUsersResponse = _class("GetAllOnlineUsersResponse")
 
 
 def users_stats_callable(channel):
@@ -130,4 +146,13 @@ def online_ip_list_callable(channel):
         GET_STATS_ONLINE_IP_LIST_METHOD,
         request_serializer=GetStatsRequest.SerializeToString,
         response_deserializer=GetStatsOnlineIpListResponse.FromString,
+    )
+
+
+def all_online_users_callable(channel):
+    """One RPC returning the emails of every user with live connections."""
+    return channel.unary_unary(
+        GET_ALL_ONLINE_USERS_METHOD,
+        request_serializer=GetAllOnlineUsersRequest.SerializeToString,
+        response_deserializer=GetAllOnlineUsersResponse.FromString,
     )

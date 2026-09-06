@@ -424,8 +424,9 @@ class AnomalyMonitor:
                 )
             if self.ip_source == "unavailable":
                 warnings.append(
-                    "this Xray core does not report per-user online IPs; only "
-                    "traffic-based rules can fire"
+                    "this Xray core does not report per-user online IPs, so "
+                    "sharing cannot be detected — update the core to v25.2.18 "
+                    "or newer (v26.4.13+ answers in a single call)"
                 )
             return {
                 "ip_source": self.ip_source,

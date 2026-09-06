@@ -171,6 +171,28 @@ class Stats(XRayBase):
             for user in response.users
         ]
 
+    def get_all_online_users(self, timeout: int = None) -> typing.List[str]:
+        """Emails of every user holding live connections, without their IPs.
+
+        Cheap middle ground for cores that know who is online but cannot
+        report everything in one call: the caller probes only these users with
+        :meth:`get_user_online_ips`. Cores older than the RPC raise
+        :class:`NotSupportedError`.
+        """
+        call = self._online_callable("all_online_users")
+        try:
+            response = call(
+                online.GetAllOnlineUsersRequest(), timeout=timeout
+            )
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                raise NotSupportedError(
+                    e.details() or "GetAllOnlineUsers is unavailable"
+                )
+            raise RelatedError(e)
+
+        return list(response.users)
+
     def get_user_online_ips(
         self, email: str, timeout: int = None
     ) -> typing.List[OnlineIp]:

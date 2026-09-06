@@ -65,7 +65,14 @@ def _node_label(node_id: Optional[int]) -> str:
 
 def _collect(api, label: str, probe_emails: List[str]
              ) -> Tuple[str, Dict[str, List[Observation]], Optional[str]]:
-    """Online IPs per user for one core. Returns (source, observations, error)."""
+    """Online IPs per user for one core. Returns (source, observations, error).
+
+    Three RPCs, added to Xray in three different releases, so a core answers
+    UNIMPLEMENTED to whichever it predates and we walk down the list:
+    `GetUsersStats` (everything in one call), `GetAllOnlineUsers` (who is
+    online, then one probe each), and finally probing candidates guessed from
+    recent traffic in the database.
+    """
     now = time.time()
     try:
         users = api.get_users_online_stats(timeout=ANOMALY_STATS_TIMEOUT)
@@ -83,23 +90,38 @@ def _collect(api, label: str, probe_emails: List[str]
     except Exception as err:
         return "error", {}, str(err)[:300]
 
-    if not probe_emails:
-        return "unavailable", {}, None
+    # asking the core who is online beats guessing from the database: it also
+    # tells us "nobody" apart from "cannot answer that"
+    listed = False
+    try:
+        emails = api.get_all_online_users(timeout=ANOMALY_STATS_TIMEOUT)[:ANOMALY_PROBE_LIMIT]
+        listed = True
+    except xray_exc.NotSupportedError:
+        emails = probe_emails
+    except Exception as err:
+        logger.debug(f"anomaly: {label} online-user list failed: {err}")
+        emails = probe_emails
+
+    if not emails:
+        # an empty list from the core means an idle server, not a blind one
+        return ("probe" if listed else "unavailable"), {}, None
 
     observations: Dict[str, List[Observation]] = {}
-    for email in probe_emails:
+    answered = False
+    for email in emails:
         try:
             ips = api.get_user_online_ips(email, timeout=ANOMALY_STATS_TIMEOUT)
         except xray_exc.NotSupportedError:
             return "unavailable", {}, None
         except Exception:
             continue
+        answered = True
         if ips:
             observations[email] = [
                 Observation(ip=entry.ip, last_seen=entry.last_seen or now, node=label)
                 for entry in ips
             ]
-    return "probe", observations, None
+    return ("probe" if answered or listed else "unavailable"), observations, None
 
 
 def _probe_candidates(settings) -> List[str]:
@@ -138,8 +160,9 @@ def _sample(settings) -> None:
             apis[node_id] = node.api
 
     probe_emails: List[str] = []
-    if monitor.ip_source in ("probe", "unavailable"):
-        # only pay for the candidate query while actually in the fallback path
+    if monitor.ip_source != "bulk":
+        # only pay for the candidate query while a fallback is still possible;
+        # this includes the very first tick, when the core is still unclassified
         probe_emails = _probe_candidates(settings)
 
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -193,6 +216,12 @@ def _sample(settings) -> None:
 
 def monitor_info(settings) -> AnomalyMonitorInfo:
     status = monitor.status()
+    warnings = list(status["warnings"])
+    if status["ip_source"] == "unavailable":
+        # naming the running version turns the warning into an instruction
+        version = getattr(xray.core, "version", None)
+        if version:
+            warnings.append(f"running Xray core: {version}")
     return AnomalyMonitorInfo(
         is_enabled=bool(settings.is_enabled),
         ip_source=status["ip_source"],
@@ -213,7 +242,7 @@ def monitor_info(settings) -> AnomalyMonitorInfo:
         nodes_failed=status["nodes_failed"],
         tracked_users=status["tracked_users"],
         users_online=status["users_online"],
-        warnings=status["warnings"],
+        warnings=warnings,
     )
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DD_VERSION="2.6.0-20260326"
+DD_VERSION="2.6.1-20260907"
 
 # ============================================================================
 #  Marzban deploy helper — nginx + haproxy + acme.sh + WARP + sysctl tuning
@@ -261,6 +261,35 @@ install_acme() {
 
 # ─── Issue certificates ────────────────────────────────────────────────────
 
+# CA fallback chain, shared by both issue paths (standalone and DNS-01).
+# An empty entry means "acme.sh default CA", set to Let's Encrypt in
+# install_acme. Names must exist in CA_NAMES inside acme.sh.
+ACME_CA_SERVERS=("" "zerossl")
+ACME_CA_LABELS=("Let's Encrypt" "ZeroSSL")
+
+# An unknown --server value is NOT rejected by acme.sh: _selectServer falls back
+# to using the string itself as the ACME directory URL, so curl cannot resolve
+# such a "host" and fails with error 6. acme.sh treats that as a temporary
+# outage and retries — _initAPI 10 times every 10s, plus up to 20 nonce attempts
+# with backoff up to 20s — so a dead CA costs tens of minutes per domain and
+# floods the log with "Could not get nonce" instead of reporting the problem.
+#
+# This is exactly what happened with Buypass: the free service was shut down and
+# the CA was removed from acme.sh, while this script kept asking for it. Skip any
+# CA the installed acme.sh does not know, so dropping a CA upstream degrades into
+# one clear warning instead of a silent stall.
+acme_supports_ca() {
+    local name="$1"
+    [[ -z "$name" ]] && return 0
+
+    local known
+    known=$(sed -n '/^CA_NAMES=/,/^"/p' "${ACME_HOME}/acme.sh" 2>/dev/null || true)
+    # Unparseable list — assume supported rather than skipping every fallback.
+    [[ -z "$known" ]] && return 0
+
+    grep -qiwF -- "$name" <<<"$known"
+}
+
 cert_is_valid() {
     local cert_file="$1"
     [[ -f "$cert_file" && -s "$cert_file" ]] || return 1
@@ -299,14 +328,17 @@ issue_cert_with_fallback() {
         return 0
     fi
 
-    local servers=("" "zerossl" "buypass")
-    local labels=("Let's Encrypt" "ZeroSSL" "Buypass")
     local prev_label=""
 
-    for i in "${!servers[@]}"; do
-        local server="${servers[$i]}"
-        local label="${labels[$i]}"
+    for i in "${!ACME_CA_SERVERS[@]}"; do
+        local server="${ACME_CA_SERVERS[$i]}"
+        local label="${ACME_CA_LABELS[$i]}"
         local args=(--issue --standalone -d "$domain" --log)
+
+        if ! acme_supports_ca "$server"; then
+            log_warn "acme.sh does not know CA '${server}' — skipping ${label}"
+            continue
+        fi
 
         if [[ -n "$server" ]]; then
             log_warn "${prev_label} failed for ${domain} — trying ${label}"
@@ -456,14 +488,17 @@ issue_wildcard_cert() {
         return 0
     fi
 
-    local servers=("" "zerossl" "buypass")
-    local labels=("Let's Encrypt" "ZeroSSL" "Buypass")
     local prev_label=""
 
-    for i in "${!servers[@]}"; do
-        local server="${servers[$i]}"
-        local label="${labels[$i]}"
+    for i in "${!ACME_CA_SERVERS[@]}"; do
+        local server="${ACME_CA_SERVERS[$i]}"
+        local label="${ACME_CA_LABELS[$i]}"
         local args=(--issue --dns dns_cf -d "${base_domain}" -d "*.${base_domain}" --log)
+
+        if ! acme_supports_ca "$server"; then
+            log_warn "acme.sh does not know CA '${server}' — skipping ${label}"
+            continue
+        fi
 
         if [[ -n "$server" ]]; then
             log_warn "${prev_label} failed — trying ${label}"

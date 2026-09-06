@@ -90,11 +90,21 @@ The monitor reads per-user online IPs from the Xray core. Sauceban always sets
 `policy.levels."0".statsUserOnline = true` in the generated config, so nothing
 needs to be added to `XRAY_JSON`.
 
-| Core capability | What the monitor does |
-|---|---|
-| `GetUsersStats` (bulk online IPs) | one RPC per core per tick — `ip_source: "bulk"` |
-| only `GetStatsOnlineIpList` | probes up to `ANOMALY_PROBE_LIMIT` recently-online users — `ip_source: "probe"` |
-| neither RPC | reports `ip_source: "unavailable"` and a warning; nothing is detected |
+The three RPCs it can use landed in three different Xray releases, so the
+monitor walks down the list until one answers:
+
+| Xray-core | RPC | What the monitor does |
+|---|---|---|
+| ≥ `v26.4.13` | `GetUsersStats` | one call per core per tick — `ip_source: "bulk"` |
+| ≥ `v25.12.1` | `GetAllOnlineUsers` + `GetStatsOnlineIpList` | asks who is online, then one probe each (up to `ANOMALY_PROBE_LIMIT`) — `ip_source: "probe"` |
+| ≥ `v25.2.18` | `GetStatsOnlineIpList` | probes the users that moved the most traffic recently — `ip_source: "probe"` |
+| older | — | `ip_source: "unavailable"` plus a warning; sharing cannot be detected |
+
+**`ip_source: "unavailable"` means "update Xray".** Nothing else in the panel
+needs to change; the version of the panel or of Marzban-Node does not matter,
+only the core binary on the machine that terminates the traffic. Check it with
+`xray version` (or `docker exec marzban xray version`), and note that each node
+runs its own core — a node that is too old just contributes no observations.
 
 Older cores that do not know `statsUserOnline` ignore the key, so enabling the
 monitor on them is harmless — it just never sees any IPs.
