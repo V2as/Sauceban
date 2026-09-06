@@ -15,6 +15,8 @@ from app.db.models import (
     TLS,
     Admin,
     AdminUsageLogs,
+    AnomalyScheduler,
+    AnomalySettings,
     NextPlan,
     Node,
     NodeUsage,
@@ -45,6 +47,11 @@ from app.models.user import (
 from app.models.notification_scheduler import (
     NotificationSchedulerCreate,
     NotificationSchedulerModify,
+)
+from app.models.anomaly import (
+    AnomalySchedulerCreate,
+    AnomalySchedulerModify,
+    AnomalySettingsModify,
 )
 from app.models.user_template import UserTemplateCreate, UserTemplateModify
 from app.utils.helpers import calculate_expiration_days, calculate_usage_percent
@@ -1583,3 +1590,206 @@ def record_notification_scheduler_run(
     if not success:
         dbscheduler.failed_runs = (dbscheduler.failed_runs or 0) + 1
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Traffic-anomaly monitor (settings + webhook targets)
+# ---------------------------------------------------------------------------
+
+def get_anomaly_settings(db: Session) -> AnomalySettings:
+    """Return the monitor settings, creating the default row on first use."""
+    settings = db.query(AnomalySettings).order_by(AnomalySettings.id).first()
+    if settings is None:
+        settings = AnomalySettings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+def update_anomaly_settings(
+    db: Session, modify: AnomalySettingsModify
+) -> AnomalySettings:
+    """Partially update the monitor settings."""
+    settings = get_anomaly_settings(db)
+    data = modify.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        if value is not None:
+            setattr(settings, field, value)
+
+    # the window must be able to hold at least one sample
+    if settings.window_seconds < settings.sample_interval:
+        settings.window_seconds = settings.sample_interval
+
+    db.commit()
+    db.refresh(settings)
+    return settings
+
+
+def get_anomaly_schedulers(db: Session) -> List[AnomalyScheduler]:
+    """Return all configured anomaly webhook targets."""
+    return db.query(AnomalyScheduler).order_by(AnomalyScheduler.id).all()
+
+
+def get_anomaly_scheduler(db: Session, scheduler_id: int) -> Optional[AnomalyScheduler]:
+    """Return a single anomaly webhook target by its id (or None)."""
+    return db.query(AnomalyScheduler).filter(
+        AnomalyScheduler.id == scheduler_id
+    ).first()
+
+
+def create_anomaly_scheduler(
+    db: Session, scheduler: AnomalySchedulerCreate
+) -> AnomalyScheduler:
+    """Create a new anomaly webhook target."""
+    dbscheduler = AnomalyScheduler(
+        name=scheduler.name,
+        webhook_url=scheduler.webhook_url,
+        secret_key=scheduler.secret_key or None,
+        interval=scheduler.interval,
+        is_enabled=scheduler.is_enabled,
+        min_severity=scheduler.min_severity,
+        send_empty=scheduler.send_empty,
+        last_status="pending" if scheduler.is_enabled else None,
+    )
+    db.add(dbscheduler)
+    db.commit()
+    db.refresh(dbscheduler)
+    return dbscheduler
+
+
+def update_anomaly_scheduler(
+    db: Session,
+    dbscheduler: AnomalyScheduler,
+    modify: AnomalySchedulerModify,
+) -> AnomalyScheduler:
+    """Partially update an existing anomaly webhook target."""
+    data = modify.model_dump(exclude_unset=True)
+    for field in ("name", "webhook_url", "interval", "is_enabled",
+                  "min_severity", "send_empty"):
+        if field in data and data[field] is not None:
+            setattr(dbscheduler, field, data[field])
+    if "secret_key" in data:
+        dbscheduler.secret_key = data["secret_key"] or None
+
+    db.commit()
+    db.refresh(dbscheduler)
+    return dbscheduler
+
+
+def delete_anomaly_scheduler(db: Session, dbscheduler: AnomalyScheduler) -> None:
+    """Delete an anomaly webhook target."""
+    db.delete(dbscheduler)
+    db.commit()
+
+
+def record_anomaly_scheduler_run(
+    db: Session,
+    scheduler_id: int,
+    success: bool,
+    status_code: Optional[int] = None,
+    error: Optional[str] = None,
+    anomalies_sent: int = 0,
+) -> None:
+    """Persist the outcome of an anomaly push attempt."""
+    dbscheduler = get_anomaly_scheduler(db, scheduler_id)
+    if not dbscheduler:
+        return
+    dbscheduler.last_run_at = datetime.utcnow()
+    dbscheduler.last_status = "success" if success else "failed"
+    dbscheduler.last_status_code = status_code
+    dbscheduler.last_error = (error or None) if not success else None
+    dbscheduler.total_runs = (dbscheduler.total_runs or 0) + 1
+    if not success:
+        dbscheduler.failed_runs = (dbscheduler.failed_runs or 0) + 1
+    if success and anomalies_sent:
+        dbscheduler.total_anomalies_sent = (
+            dbscheduler.total_anomalies_sent or 0
+        ) + anomalies_sent
+    db.commit()
+
+
+def get_users_traffic(db: Session, user_ids: List[int]) -> Dict[int, int]:
+    """Cumulative `used_traffic` for the given users, keyed by id.
+
+    Chunked so the IN list stays well below SQLite's variable limit.
+    """
+    traffic: Dict[int, int] = {}
+    for start in range(0, len(user_ids), 500):
+        chunk = user_ids[start:start + 500]
+        rows = db.query(User.id, User.used_traffic).filter(User.id.in_(chunk)).all()
+        for user_id, used in rows:
+            traffic[user_id] = int(used or 0)
+    return traffic
+
+
+def get_recently_online_users(
+    db: Session, since: datetime, limit: int = 100
+) -> List[Tuple[int, str, int]]:
+    """(id, username, used_traffic) of users seen online since `since`."""
+    rows = db.query(User.id, User.username, User.used_traffic).filter(
+        User.online_at.isnot(None), User.online_at >= since
+    ).limit(limit).all()
+    return [(r[0], r[1], int(r[2] or 0)) for r in rows]
+
+
+def get_anomaly_clients(db: Session, usernames: List[str]) -> Dict[str, dict]:
+    """Client details for reported users, keyed by username.
+
+    One query for the users plus one aggregate for their reset logs — the
+    reported set is normally a handful of rows.
+    """
+    if not usernames:
+        return {}
+
+    rows = db.query(
+        User.id,
+        User.username,
+        User.status,
+        User.used_traffic,
+        User.data_limit,
+        User.data_limit_reset_strategy,
+        User.expire,
+        User.online_at,
+        User.created_at,
+        User.sub_updated_at,
+        User.sub_last_user_agent,
+        User.note,
+        User.admin_id,
+    ).filter(User.username.in_(usernames[:500])).all()
+
+    user_ids = [r.id for r in rows]
+    reseted = dict(
+        db.query(UserUsageResetLogs.user_id,
+                 func.sum(UserUsageResetLogs.used_traffic_at_reset))
+        .filter(UserUsageResetLogs.user_id.in_(user_ids))
+        .group_by(UserUsageResetLogs.user_id)
+        .all()
+    ) if user_ids else {}
+    admins = dict(db.query(Admin.id, Admin.username).all())
+
+    clients = {}
+    for r in rows:
+        used = int(r.used_traffic or 0)
+        clients[r.username] = {
+            "user_id": r.id,
+            "username": r.username,
+            "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+            "used_traffic": used,
+            "lifetime_used_traffic": used + int(reseted.get(r.id, 0) or 0),
+            "data_limit": int(r.data_limit) if r.data_limit is not None else None,
+            "data_limit_reset_strategy": (
+                r.data_limit_reset_strategy.value
+                if hasattr(r.data_limit_reset_strategy, "value")
+                else (str(r.data_limit_reset_strategy)
+                      if r.data_limit_reset_strategy else None)
+            ),
+            "expire": r.expire,
+            "online_at": r.online_at,
+            "created_at": r.created_at,
+            "sub_updated_at": r.sub_updated_at,
+            "sub_last_user_agent": r.sub_last_user_agent,
+            "note": r.note,
+            "admin": admins.get(r.admin_id),
+        }
+    return clients

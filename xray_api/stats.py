@@ -1,10 +1,11 @@
 import typing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import grpc
 
+from . import online
 from .base import XRayBase
-from .exceptions import RelatedError
+from .exceptions import NotSupportedError, RelatedError
 from .proto.app.stats.command import command_pb2, command_pb2_grpc
 
 
@@ -51,7 +52,27 @@ class OutboundStatsResponse:
     downlink: int
 
 
+@dataclass
+class OnlineIp:
+    ip: str
+    last_seen: int  # unix seconds, as reported by the core
+
+
+@dataclass
+class UserOnlineStatsResponse:
+    email: str
+    ips: typing.List[OnlineIp] = field(default_factory=list)
+
+
 class Stats(XRayBase):
+    def _online_callable(self, name: str):
+        """Lazily built multicallables for the online-IP RPCs (see online.py)."""
+        cache = self.__dict__.setdefault("_online_callables", {})
+        if name not in cache:
+            factory = getattr(online, f"{name}_callable")
+            cache[name] = factory(self._channel)
+        return cache[name]
+
     def get_sys_stats(self, timeout: int = None) -> SysStatsResponse:
         try:
             stub = command_pb2_grpc.StatsServiceStub(self._channel)
@@ -121,3 +142,57 @@ class Stats(XRayBase):
             if stat.link == 'downlink':
                 downlink = stat.value
         return OutboundStatsResponse(tag=tag, uplink=uplink, downlink=downlink)
+
+    def get_users_online_stats(
+        self, timeout: int = None
+    ) -> typing.List[UserOnlineStatsResponse]:
+        """Every user holding live connections right now, with its source IPs.
+
+        A single RPC for the whole core. Requires `statsUserOnline` on the
+        user's policy level and a core that implements `GetUsersStats`;
+        older cores raise :class:`NotSupportedError`.
+        """
+        call = self._online_callable("users_stats")
+        try:
+            response = call(
+                online.GetUsersStatsRequest(include_traffic=False, reset=False),
+                timeout=timeout,
+            )
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                raise NotSupportedError(e.details() or "GetUsersStats is unavailable")
+            raise RelatedError(e)
+
+        return [
+            UserOnlineStatsResponse(
+                email=user.email,
+                ips=[OnlineIp(ip=entry.ip, last_seen=entry.last_seen) for entry in user.ips],
+            )
+            for user in response.users
+        ]
+
+    def get_user_online_ips(
+        self, email: str, timeout: int = None
+    ) -> typing.List[OnlineIp]:
+        """Source IPs currently online for one user.
+
+        Fallback for cores without the bulk `GetUsersStats` call. An unknown
+        counter (user offline, or `statsUserOnline` not enabled) comes back as
+        an empty list.
+        """
+        call = self._online_callable("online_ip_list")
+        try:
+            response = call(
+                online.GetStatsRequest(name=f"user>>>{email}>>>online", reset=False),
+                timeout=timeout,
+            )
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                raise NotSupportedError(
+                    e.details() or "GetStatsOnlineIpList is unavailable"
+                )
+            if e.code() == grpc.StatusCode.NOT_FOUND:
+                return []
+            raise RelatedError(e)
+
+        return [OnlineIp(ip=entry.key, last_seen=entry.value) for entry in response.ips]

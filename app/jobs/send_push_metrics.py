@@ -37,7 +37,8 @@ def _job_id(scheduler_id: int) -> str:
     return f"{JOB_PREFIX}{scheduler_id}"
 
 
-def deliver(webhook_url: str, secret_key: Optional[str], payload) -> Tuple[bool, Optional[int], Optional[str]]:
+def deliver(webhook_url: str, secret_key: Optional[str], payload,
+            user_agent: str = "Marzban-PushMetrics/1.0") -> Tuple[bool, Optional[int], Optional[str]]:
     """Deliver a payload to a single webhook.
 
     The body is serialized once to bytes so the optional HMAC-SHA256 signature
@@ -50,7 +51,7 @@ def deliver(webhook_url: str, secret_key: Optional[str], payload) -> Tuple[bool,
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "Marzban-PushMetrics/1.0",
+        "User-Agent": user_agent,
     }
     if secret_key:
         headers["X-Webhook-Secret"] = secret_key

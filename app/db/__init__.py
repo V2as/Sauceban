@@ -35,9 +35,16 @@ from .crud import (create_admin, create_notification_reminder,  # noqa
                    create_notification_scheduler, get_notification_scheduler,
                    get_notification_schedulers, update_notification_scheduler,
                    delete_notification_scheduler, record_notification_scheduler_run,
+                   get_anomaly_settings, update_anomaly_settings,
+                   create_anomaly_scheduler, get_anomaly_scheduler,
+                   get_anomaly_schedulers, update_anomaly_scheduler,
+                   delete_anomaly_scheduler, record_anomaly_scheduler_run,
+                   get_anomaly_clients, get_users_traffic,
+                   get_recently_online_users,
                    count_online_users)
 
-from .models import JWT, System, User, NotificationScheduler  # noqa
+from .models import (JWT, System, User, NotificationScheduler,  # noqa
+                     AnomalyScheduler, AnomalySettings)
 
 __all__ = [
     "get_or_create_inbound",
@@ -77,6 +84,18 @@ __all__ = [
     "record_notification_scheduler_run",
     "count_online_users",
 
+    "get_anomaly_settings",
+    "update_anomaly_settings",
+    "create_anomaly_scheduler",
+    "get_anomaly_scheduler",
+    "get_anomaly_schedulers",
+    "update_anomaly_scheduler",
+    "delete_anomaly_scheduler",
+    "record_anomaly_scheduler_run",
+    "get_anomaly_clients",
+    "get_users_traffic",
+    "get_recently_online_users",
+
     "GetDB",
     "get_db",
 
@@ -84,6 +103,8 @@ __all__ = [
     "System",
     "JWT",
     "NotificationScheduler",
+    "AnomalyScheduler",
+    "AnomalySettings",
 
     "Base",
     "Session",

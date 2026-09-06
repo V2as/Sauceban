@@ -86,7 +86,10 @@ class XRayConfig(dict):
             "levels": {
                 "0": {
                     "statsUserUplink": True,
-                    "statsUserDownlink": True
+                    "statsUserDownlink": True,
+                    # feeds the per-user online-IP counters the anomaly
+                    # monitor reads; cores that predate it ignore the key
+                    "statsUserOnline": True
                 }
             },
             "system": {

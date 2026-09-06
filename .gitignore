@@ -160,3 +160,6 @@ xray-core
 *-dev.yml
 *-dev.yaml
 *-debug.*
+
+# Dashboard node_modules (также в app/dashboard/.gitignore)
+node_modules/

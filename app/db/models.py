@@ -380,3 +380,79 @@ class NotificationScheduler(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AnomalySettings(Base):
+    """Single-row configuration of the traffic-anomaly monitor.
+
+    Kept apart from the webhook targets below so monitoring can be switched on
+    (and inspected in the dashboard) without configuring any receiver, and so
+    that the thresholds — what counts as an anomaly — are defined once for the
+    whole panel."""
+
+    __tablename__ = "anomaly_settings"
+
+    id = Column(Integer, primary_key=True)
+    is_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    # how often the online-IP snapshot is taken, in seconds
+    sample_interval = Column(Integer, nullable=False, default=30, server_default=text("30"))
+    # length of the sliding window the rules are evaluated over, in seconds
+    window_seconds = Column(Integer, nullable=False, default=300, server_default=text("300"))
+
+    # thresholds; 0 disables the individual rule
+    # /24 (IPv4) or /64 (IPv6) networks connected at the same instant
+    max_concurrent_networks = Column(Integer, nullable=False, default=2, server_default=text("2"))
+    # distinct networks anywhere in the window
+    max_subnets = Column(Integer, nullable=False, default=3, server_default=text("3"))
+    # raw source IPs in the window (only counted once they span 2+ networks)
+    max_ips = Column(Integer, nullable=False, default=6, server_default=text("6"))
+    # consecutive samples a rule must fire on before anything is reported
+    min_hits = Column(Integer, nullable=False, default=2, server_default=text("2"))
+    # load gate: below this rate a sharing report is not worth sending (0 = off)
+    min_traffic_rate_mbps = Column(Float, nullable=False, default=0.0, server_default=text("0"))
+    # report when the user exceeds this multiple of its own baseline (0 = off)
+    traffic_spike_ratio = Column(Float, nullable=False, default=0.0, server_default=text("0"))
+    # per-user re-report suppression, in seconds
+    cooldown_seconds = Column(Integer, nullable=False, default=900, server_default=text("900"))
+
+    # whether raw source IPs are part of the pushed evidence
+    include_ips = Column(Boolean, nullable=False, default=True, server_default="1")
+    max_ips_in_report = Column(Integer, nullable=False, default=20, server_default=text("20"))
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AnomalyScheduler(Base):
+    """A webhook target that receives traffic-anomaly reports.
+
+    Same shape as :class:`NotificationScheduler` (independent URL, secret and
+    status bookkeeping) but event-driven: a push happens when the monitor has
+    something to report, and `interval` is the minimum spacing between pushes
+    to this target rather than a fixed period."""
+
+    __tablename__ = "anomaly_schedulers"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), nullable=False)
+    webhook_url = Column(String(1024), nullable=False)
+    secret_key = Column(String(256), nullable=True, default=None)
+    # minimum seconds between two pushes to this target
+    interval = Column(Integer, nullable=False, default=60, server_default=text("60"))
+    is_enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    # lowest severity this receiver cares about: low | medium | high | critical
+    min_severity = Column(String(16), nullable=False, default="low", server_default="low")
+    # push a report even when no anomaly was found (heartbeat)
+    send_empty = Column(Boolean, nullable=False, default=False, server_default="0")
+
+    # runtime status bookkeeping
+    last_run_at = Column(DateTime, nullable=True, default=None)
+    last_status = Column(String(16), nullable=True, default=None)  # success | failed | pending
+    last_status_code = Column(Integer, nullable=True, default=None)
+    last_error = Column(String(1024), nullable=True, default=None)
+    total_runs = Column(BigInteger, nullable=False, default=0, server_default="0")
+    failed_runs = Column(BigInteger, nullable=False, default=0, server_default="0")
+    total_anomalies_sent = Column(BigInteger, nullable=False, default=0, server_default="0")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

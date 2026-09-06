@@ -53,6 +53,13 @@ class UnknownError(XrayError):
         super().__init__(details)
 
 
+class NotSupportedError(XrayError):
+    """The running core does not implement the requested RPC."""
+
+    def __init__(self, details=''):
+        super().__init__(details)
+
+
 class RelatedError(XrayError):
     def __new__(cls, error: grpc.RpcError):
         details = error.details()

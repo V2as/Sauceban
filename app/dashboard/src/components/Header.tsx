@@ -17,6 +17,7 @@ import {
   ChartPieIcon,
   Cog6ToothIcon,
   DocumentMinusIcon,
+  ExclamationTriangleIcon,
   LinkIcon,
   MoonIcon,
   SquaresPlusIcon,
@@ -50,6 +51,7 @@ const NodesIcon = chakra(SquaresPlusIcon, iconProps);
 const NodesUsageIcon = chakra(ChartPieIcon, iconProps);
 const ResetUsageIcon = chakra(DocumentMinusIcon, iconProps);
 const NotificationsIcon = chakra(BellAlertIcon, iconProps);
+const AnomalyIcon = chakra(ExclamationTriangleIcon, iconProps);
 
 export const Header: FC<HeaderProps> = ({ actions }) => {
   const { userData, getUserIsSuccess, getUserIsPending } = useGetUser();
@@ -67,6 +69,7 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
     onEditingNodes,
     onShowingNodesUsage,
     onEditingNotifications,
+    onEditingAnomaly,
   } = useDashboard();
   const { t } = useTranslation();
   const { colorMode, toggleColorMode } = useColorMode();
@@ -133,6 +136,14 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
                     onClick={onEditingNotifications.bind(null, true)}
                   >
                     {t("header.notificationSettings")}
+                  </MenuItem>
+                  <MenuItem
+                    maxW="170px"
+                    fontSize="sm"
+                    icon={<AnomalyIcon />}
+                    onClick={onEditingAnomaly.bind(null, true)}
+                  >
+                    {t("header.anomalySettings")}
                   </MenuItem>
                   <MenuItem
                     maxW="170px"

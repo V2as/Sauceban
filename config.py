@@ -159,3 +159,19 @@ JOB_SYNC_PUSH_SCHEDULERS_INTERVAL = config("JOB_SYNC_PUSH_SCHEDULERS_INTERVAL", 
 PUSH_METRICS_CACHE_TTL = config("PUSH_METRICS_CACHE_TTL", cast=int, default=2)
 # HTTP timeout (seconds) when delivering a push to a webhook.
 PUSH_WEBHOOK_TIMEOUT = config("PUSH_WEBHOOK_TIMEOUT", cast=int, default=15)
+
+
+# Traffic-anomaly monitor (detects shared subscriptions)
+# Lower bound for the sampling interval and for the per-webhook push spacing.
+ANOMALY_MIN_SAMPLE_INTERVAL = config("ANOMALY_MIN_SAMPLE_INTERVAL", cast=int, default=5)
+# How often (in seconds) the sampler job is reconciled with the settings row
+# stored in the database (enable/disable, interval changes).
+JOB_SYNC_ANOMALY_MONITOR_INTERVAL = config("JOB_SYNC_ANOMALY_MONITOR_INTERVAL", cast=int, default=15)
+# gRPC timeout (seconds) for one online-IP snapshot per core/node.
+ANOMALY_STATS_TIMEOUT = config("ANOMALY_STATS_TIMEOUT", cast=int, default=10)
+# Ceiling on how many users the sliding window keeps in memory; the least
+# recently seen ones are dropped first.
+ANOMALY_MAX_TRACKED_USERS = config("ANOMALY_MAX_TRACKED_USERS", cast=int, default=5000)
+# Cores without the bulk GetUsersStats RPC are probed one user at a time.
+# Caps how many of the heaviest recently-online users get probed per sample.
+ANOMALY_PROBE_LIMIT = config("ANOMALY_PROBE_LIMIT", cast=int, default=100)
