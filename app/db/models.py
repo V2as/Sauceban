@@ -102,6 +102,14 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    # bandwidth cap; deleting the user drops its blacklist entry with it
+    blacklist_entry = relationship(
+        "BlacklistUser",
+        uselist=False,
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
     @hybrid_property
     def reseted_usage(self) -> int:
         return int(sum([log.used_traffic_at_reset for log in self.usage_logs]))
@@ -419,6 +427,17 @@ class AnomalySettings(Base):
     include_ips = Column(Boolean, nullable=False, default=True, server_default="1")
     max_ips_in_report = Column(Integer, nullable=False, default=20, server_default=text("20"))
 
+    # automatic response: cap the offender's bandwidth for a while instead of
+    # only reporting it. The cap itself lives in `blacklist_users`.
+    throttle_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    throttle_mbps = Column(Integer, nullable=False, default=10, server_default=text("10"))
+    throttle_seconds = Column(Integer, nullable=False, default=3600, server_default=text("3600"))
+    # lowest severity worth throttling; kept apart from the per-webhook floor
+    # because reporting an anomaly and punishing it are different decisions
+    throttle_min_severity = Column(
+        String(16), nullable=False, default="high", server_default="high"
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -454,5 +473,41 @@ class AnomalyScheduler(Base):
     failed_runs = Column(BigInteger, nullable=False, default=0, server_default="0")
     total_anomalies_sent = Column(BigInteger, nullable=False, default=0, server_default="0")
 
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BlacklistUser(Base):
+    """A user whose bandwidth is capped ("blacklist" in the dashboard).
+
+    Deliberately a table of its own instead of extra columns on `users`: a
+    panel can be updated to this version and rolled back without touching the
+    schema every other feature depends on. A row exists only while the user is
+    restricted — absence means "unlimited", so the shaper's reconciler can work
+    off this table alone.
+    """
+
+    __tablename__ = "blacklist_users"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    user = relationship("User", back_populates="blacklist_entry")
+    # cap in megabits per second, applied to each direction separately
+    limit_mbps = Column(Integer, nullable=False)
+    # keep the entry but stop shaping (lets an operator lift a cap temporarily)
+    is_enabled = Column(Boolean, nullable=False, default=True, server_default="1")
+    reason = Column(String(500), nullable=True, default=None)
+    # who put the cap here: an operator ("manual") or the anomaly monitor
+    # ("anomaly"). Only automatic caps expire, and only they may be replaced
+    # by the monitor — an operator's decision outranks the automation.
+    source = Column(String(16), nullable=False, default="manual", server_default="manual")
+    # when an automatic cap lifts itself; NULL means "until removed by hand"
+    expires_at = Column(DateTime, nullable=True, default=None, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

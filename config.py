@@ -175,3 +175,27 @@ ANOMALY_MAX_TRACKED_USERS = config("ANOMALY_MAX_TRACKED_USERS", cast=int, defaul
 # Cores without the bulk GetUsersStats RPC are probed one user at a time.
 # Caps how many of the heaviest recently-online users get probed per sample.
 ANOMALY_PROBE_LIMIT = config("ANOMALY_PROBE_LIMIT", cast=int, default=100)
+
+
+# Per-user bandwidth caps (the "blacklist")
+# How often (in seconds) the caps stored in the database and the source IPs of
+# the capped users are reconciled with the kernel's traffic control state.
+JOB_SYNC_BLACKLIST_INTERVAL = config("JOB_SYNC_BLACKLIST_INTERVAL", cast=int, default=10)
+# Enforce the caps with `tc`. Turn off to keep the blacklist as bookkeeping
+# only (no qdisc is installed, the API and dashboard keep working).
+BLACKLIST_ENFORCE = config("BLACKLIST_ENFORCE", cast=bool, default=True)
+# Interface the tunnel traffic leaves through; empty means the interface of
+# the default route.
+BLACKLIST_INTERFACE = config("BLACKLIST_INTERFACE", default="")
+# Rate of the catch-all class every uncapped packet falls into; must be at or
+# above the real link speed or it would throttle the whole server.
+BLACKLIST_LINK_MBPS = config("BLACKLIST_LINK_MBPS", cast=int, default=10000)
+# How long (in seconds) an address keeps being shaped after the user was last
+# seen using it. Absorbs gaps between samples instead of flapping the rules.
+BLACKLIST_IP_TTL = config("BLACKLIST_IP_TTL", cast=int, default=180)
+# Highest cap the API accepts, in megabits per second.
+BLACKLIST_MAX_MBPS = config("BLACKLIST_MAX_MBPS", cast=int, default=10000)
+# gRPC timeout (seconds) for reading the online IPs of the capped users.
+BLACKLIST_STATS_TIMEOUT = config("BLACKLIST_STATS_TIMEOUT", cast=int, default=10)
+# Timeout (seconds) for one `tc` invocation.
+BLACKLIST_TC_TIMEOUT = config("BLACKLIST_TC_TIMEOUT", cast=int, default=10)

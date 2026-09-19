@@ -23,6 +23,10 @@ export const AnomalySettingsSchema = z.object({
   cooldown_seconds: asNumber(0),
   include_ips: z.boolean(),
   max_ips_in_report: asNumber(1),
+  throttle_enabled: z.boolean(),
+  throttle_mbps: asNumber(1),
+  throttle_seconds: asNumber(60),
+  throttle_min_severity: z.string(),
 });
 
 export type AnomalySettingsType = z.infer<typeof AnomalySettingsSchema>;
@@ -91,6 +95,13 @@ export type AnomalyRecordType = {
     admin?: string | null;
     sub_last_user_agent?: string | null;
   };
+  throttle?: {
+    applied: boolean;
+    action: string;
+    limit_mbps: number;
+    expires_at: number | null;
+    source: string;
+  } | null;
 };
 
 export type AnomalyReportType = {
@@ -105,6 +116,15 @@ export type AnomalyReportType = {
     last_sample_at: number | null;
     last_error: string | null;
     warnings: string[];
+    throttle?: {
+      enabled: boolean;
+      limit_mbps: number;
+      duration_seconds: number;
+      min_severity: string;
+      active: number;
+      enforceable: boolean;
+      unavailable_reason: string | null;
+    };
   };
   summary: {
     anomalies_total: number;

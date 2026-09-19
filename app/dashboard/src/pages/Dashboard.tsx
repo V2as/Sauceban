@@ -11,6 +11,8 @@ import { NotificationSettingsDialog } from "components/NotificationSettingsModal
 import { DeleteSchedulerModal } from "components/DeleteSchedulerModal";
 import { AnomalySettingsDialog } from "components/AnomalySettingsModal";
 import { DeleteAnomalySchedulerModal } from "components/DeleteAnomalySchedulerModal";
+import { BlacklistDialog } from "components/BlacklistModal";
+import { DeleteBlacklistEntryModal } from "components/DeleteBlacklistEntryModal";
 import { QRCodeDialog } from "components/QRCodeDialog";
 import { ResetAllUsageModal } from "components/ResetAllUsageModal";
 import { ResetUserUsageModal } from "components/ResetUserUsageModal";
@@ -47,6 +49,8 @@ export const Dashboard: FC = () => {
         <DeleteSchedulerModal />
         <AnomalySettingsDialog />
         <DeleteAnomalySchedulerModal />
+        <BlacklistDialog />
+        <DeleteBlacklistEntryModal />
       </Box>
       <Footer />
     </VStack>

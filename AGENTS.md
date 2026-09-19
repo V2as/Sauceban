@@ -47,6 +47,7 @@ python marzban-cli.py --help                   # CLI
 | Push-метрики (контракт для приёмника) | `USAGE-PUSH.md` |
 | Push-метрики (management API) | `USAGE-ADD-PUSH.md` |
 | Мониторинг аномалий трафика (детектор + push) | `USAGE-ANOMALY.md` |
+| Чёрный список (ограничение канала через `tc`) | `USAGE-BLACKLIST.md` |
 | Команды `sauceme.sh` / `marzban` | `DOCS.md` |
 
 Меняете поведение модуля — обновите его `USAGE.md` (и при необходимости

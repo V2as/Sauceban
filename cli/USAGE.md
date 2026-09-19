@@ -4,7 +4,8 @@
 `cli/`. Для Sauce добавлены management push-scheduler'ов
 (`cli/notification.py`): create/list/update/delete/test deliver — и
 мониторинг аномалий (`cli/anomaly.py`): settings/configure/enable/disable/
-report + CRUD вебхуков.
+report + CRUD вебхуков (включая авто-замедление нарушителей — флаги
+`--throttle*` у `configure`).
 
 ```bash
 python marzban-cli.py --help

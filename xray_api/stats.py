@@ -9,6 +9,17 @@ from .exceptions import NotSupportedError, RelatedError
 from .proto.app.stats.command import command_pb2, command_pb2_grpc
 
 
+_ONLINE_PREFIX = "user>>>"
+_ONLINE_SUFFIX = ">>>online"
+
+
+def _online_counter_email(name: str) -> str:
+    """`user>>>1.alice>>>online` -> `1.alice`; anything else is passed through."""
+    if name.startswith(_ONLINE_PREFIX) and name.endswith(_ONLINE_SUFFIX):
+        return name[len(_ONLINE_PREFIX):-len(_ONLINE_SUFFIX)]
+    return name
+
+
 @dataclass
 class SysStatsResponse:
     num_goroutine: int
@@ -165,7 +176,7 @@ class Stats(XRayBase):
 
         return [
             UserOnlineStatsResponse(
-                email=user.email,
+                email=_online_counter_email(user.email),
                 ips=[OnlineIp(ip=entry.ip, last_seen=entry.last_seen) for entry in user.ips],
             )
             for user in response.users
@@ -178,6 +189,9 @@ class Stats(XRayBase):
         report everything in one call: the caller probes only these users with
         :meth:`get_user_online_ips`. Cores older than the RPC raise
         :class:`NotSupportedError`.
+
+        The core answers with counter names (`user>>>EMAIL>>>online`), which
+        are unwrapped here so callers keep working with plain emails.
         """
         call = self._online_callable("all_online_users")
         try:
@@ -191,7 +205,7 @@ class Stats(XRayBase):
                 )
             raise RelatedError(e)
 
-        return list(response.users)
+        return [_online_counter_email(name) for name in response.users]
 
     def get_user_online_ips(
         self, email: str, timeout: int = None

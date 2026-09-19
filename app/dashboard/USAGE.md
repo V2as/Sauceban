@@ -19,7 +19,18 @@ npm run build -- --outDir build --assetsDir statics    # → build/statics
 `/api/...` → при необходимости эндпоинт в `app/routers`. Push-scheduler UI
 ходит в `/api/notification` (см. `USAGE-ADD-PUSH.md`), мониторинг аномалий —
 в `/api/anomaly` (`AnomalyContext.tsx` + `AnomalySettingsModal.tsx`,
-см. `USAGE-ANOMALY.md`).
+см. `USAGE-ANOMALY.md`), чёрный список — в `/api/blacklist`
+(`BlacklistContext.tsx` + `BlacklistModal.tsx`, см. `USAGE-BLACKLIST.md`).
+
+Числовое поле формы (`Input` с `type="number"`) держит своё значение внутри
+Chakra `NumberInput`: с голым `form.register` поле продолжает показывать
+старое число после `reset`, пока react-hook-form уже отдаёт дефолт. Такие
+поля подключайте через `Controller` с `value`/`onChange` — иначе форма врёт
+о том, что отправит (`BlacklistModal.tsx` — пример).
+
+Аккордеоны со списком записей нумеруйте не позицией, а стабильным ключом
+(`id` записи, `"add"` для формы добавления): после удаления позиции
+сдвигаются, и открытым оказывается не тот блок, в который смотрел оператор.
 
 Строки локализованы плоскими ключами с точками
 (`"anomaly.severity.high"`), а не вложенными объектами — в

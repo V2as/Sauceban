@@ -52,6 +52,11 @@ def show_settings():
         table.add_row("Cooldown", f"{s.cooldown_seconds}s")
         table.add_row("Include IPs in report", "✔️" if s.include_ips else "✖️")
         table.add_row("Max IPs per report", str(s.max_ips_in_report))
+        table.add_row(
+            "Auto throttle",
+            f"{s.throttle_mbps} Mbps for {s.throttle_seconds}s "
+            f"from {s.throttle_min_severity}" if s.throttle_enabled else "✖️ off",
+        )
         console.print(table)
 
 
@@ -80,6 +85,16 @@ def configure(
                                            help="Per-user re-report suppression in seconds"),
     include_ips: Optional[bool] = typer.Option(None, "--include-ips/--no-include-ips",
                                                help="Send raw source IPs as evidence"),
+    throttle: Optional[bool] = typer.Option(
+        None, "--throttle/--no-throttle",
+        help="Cap the bandwidth of offenders instead of only reporting them"),
+    throttle_mbps: Optional[int] = typer.Option(
+        None, "--throttle-mbps", help="Cap applied to an offender, in Mbps"),
+    throttle_seconds: Optional[int] = typer.Option(
+        None, "--throttle-seconds", help="How long an automatic cap lasts"),
+    throttle_min_severity: Optional[str] = typer.Option(
+        None, "--throttle-min-severity",
+        help="Lowest severity worth capping: low | medium | high | critical"),
 ):
     """Updates the monitor settings (only the options you pass)."""
     with GetDB() as db:
@@ -98,6 +113,10 @@ def configure(
                     traffic_spike_ratio=traffic_spike_ratio,
                     cooldown_seconds=cooldown,
                     include_ips=include_ips,
+                    throttle_enabled=throttle,
+                    throttle_mbps=throttle_mbps,
+                    throttle_seconds=throttle_seconds,
+                    throttle_min_severity=throttle_min_severity,
                 ),
             )
         except Exception as err:

@@ -739,6 +739,8 @@ services:
     restart: always
     env_file: .env
     network_mode: host
+    cap_add:
+      - NET_ADMIN
     volumes:
       - /var/lib/marzban:/var/lib/marzban
       - /var/lib/marzban/logs:/var/lib/marzban-node
@@ -841,6 +843,8 @@ services:
     restart: always
     env_file: .env
     network_mode: host
+    cap_add:
+      - NET_ADMIN
     volumes:
       - /var/lib/marzban:/var/lib/marzban
       - /var/lib/marzban/logs:/var/lib/marzban-node
@@ -1511,12 +1515,27 @@ update_command() {
     update_marzban_script
     colorized_echo blue "Updating Marzban..."
     update_marzban
+    ensure_net_admin_cap
 
     colorized_echo blue "Restarting Marzban's services"
     down_marzban
     up_marzban
 
     colorized_echo green "Marzban updated successfully"
+}
+
+ensure_net_admin_cap() {
+    # per-user bandwidth caps are enforced with tc on the host interface,
+    # which the container cannot touch without NET_ADMIN; compose files
+    # written before that feature existed do not grant it
+    if [ ! -f "$COMPOSE_FILE" ]; then
+        return
+    fi
+    if yq '.services.marzban.cap_add // [] | contains(["NET_ADMIN"])' "$COMPOSE_FILE" 2>/dev/null | grep -q true; then
+        return
+    fi
+    colorized_echo blue "Granting NET_ADMIN to the marzban service (bandwidth limits)"
+    yq -i '.services.marzban.cap_add = ((.services.marzban.cap_add // []) + ["NET_ADMIN"] | unique)' "$COMPOSE_FILE"
 }
 
 update_marzban_script() {

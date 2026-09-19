@@ -22,6 +22,11 @@ WORKDIR /code
 
 RUN rm -rf $PYTHON_LIB_PATH/*
 
+# iproute2 carries `tc`, which enforces the per-user bandwidth caps
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build $PYTHON_LIB_PATH $PYTHON_LIB_PATH
 COPY --from=build /usr/local/bin /usr/local/bin
 COPY --from=build /usr/local/share/xray /usr/local/share/xray

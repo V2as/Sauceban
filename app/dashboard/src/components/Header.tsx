@@ -20,6 +20,7 @@ import {
   ExclamationTriangleIcon,
   LinkIcon,
   MoonIcon,
+  NoSymbolIcon,
   SquaresPlusIcon,
   SunIcon,
 } from "@heroicons/react/24/outline";
@@ -52,6 +53,7 @@ const NodesUsageIcon = chakra(ChartPieIcon, iconProps);
 const ResetUsageIcon = chakra(DocumentMinusIcon, iconProps);
 const NotificationsIcon = chakra(BellAlertIcon, iconProps);
 const AnomalyIcon = chakra(ExclamationTriangleIcon, iconProps);
+const BlacklistIcon = chakra(NoSymbolIcon, iconProps);
 
 export const Header: FC<HeaderProps> = ({ actions }) => {
   const { userData, getUserIsSuccess, getUserIsPending } = useGetUser();
@@ -70,6 +72,7 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
     onShowingNodesUsage,
     onEditingNotifications,
     onEditingAnomaly,
+    onEditingBlacklist,
   } = useDashboard();
   const { t } = useTranslation();
   const { colorMode, toggleColorMode } = useColorMode();
@@ -144,6 +147,14 @@ export const Header: FC<HeaderProps> = ({ actions }) => {
                     onClick={onEditingAnomaly.bind(null, true)}
                   >
                     {t("header.anomalySettings")}
+                  </MenuItem>
+                  <MenuItem
+                    maxW="170px"
+                    fontSize="sm"
+                    icon={<BlacklistIcon />}
+                    onClick={onEditingBlacklist.bind(null, true)}
+                  >
+                    {t("header.blacklist")}
                   </MenuItem>
                   <MenuItem
                     maxW="170px"

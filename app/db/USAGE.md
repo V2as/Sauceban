@@ -6,7 +6,7 @@ Postgres). Схему меняем только миграциями.
 | Файл | Назначение |
 |---|---|
 | `base.py` | engine, Session, `GetDB` |
-| `models.py` | ORM-таблицы (users, admins, nodes, …, `notification_schedulers`, `anomaly_settings`, `anomaly_schedulers`) |
+| `models.py` | ORM-таблицы (users, admins, nodes, …, `notification_schedulers`, `anomaly_settings`, `anomaly_schedulers`, `blacklist_users`) |
 | `crud.py` | все запросы к БД (~1.5k строк) — правки логики выборки сюда |
 | `migrations/` | Alembic versions; конфиг — корневой `alembic.ini` |
 
@@ -22,3 +22,18 @@ alembic -c alembic.ini revision --autogenerate -m "..."
 
 `anomaly_settings` — строка-одиночка: `get_anomaly_settings()` создаёт её с
 дефолтами при первом обращении, отдельного «сидинга» нет.
+
+`blacklist_users` (миграция `c3d4e5f6a7b8`, тоже идемпотентная) — лимит
+канала на пользователя, не более одной строки на `user_id`. Удаление
+пользователя снимает лимит: `ON DELETE CASCADE` на уровне БД плюс
+`cascade="all, delete-orphan"` на связи `User.blacklist_entry` — без него
+удаление через ORM оставляло бы висячую строку на SQLite.
+
+Миграция `d4e5f6a7b8c9` (тоже идемпотентная, только `ADD COLUMN` в свои же
+таблицы) добавляет авто-замедление: `blacklist_users.source` (`manual` /
+`anomaly`) и `expires_at`, плюс `throttle_*` в `anomaly_settings`. Правило
+владения — в CRUD: `update_blacklist_entry` переводит запись в `manual` и
+снимает срок, `upsert_anomaly_throttle` не трогает чужую (`manual`) запись,
+`expire_anomaly_throttles` удаляет истёкшие. `get_active_blacklist` отдаёт
+`expires_at` вызывающему, а не фильтрует сама: так снятие истёкших стоит
+лишний запрос только когда есть что снимать.

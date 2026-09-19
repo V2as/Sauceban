@@ -12,6 +12,7 @@ APScheduler (`BackgroundScheduler` в `app/__init__.py`), timezone UTC.
 | `send_notifications.py` | event-webhooks (`WEBHOOK_ADDRESS`) |
 | `send_push_metrics.py` | **Sauce:** периодический POST метрик по scheduler'ам из БД |
 | `detect_anomalies.py` | **Sauce:** семплер online-IP + отчёты об аномалиях на вебхуки |
+| `sync_blacklist.py` | **Sauce:** сверка лимитов канала из `blacklist_users` с правилами `tc` |
 
 Push-джоба аддитивна: нет строк в `notification_schedulers` → ничего не
 бежит. Reconciler синхронизирует interval/enable без рестарта. Сборщик —
@@ -22,6 +23,19 @@ Push-джоба аддитивна: нет строк в `notification_scheduler
 флагу `anomaly_settings.is_enabled`; выключение сбрасывает окно и очереди.
 Движок детекции — `app/utils/anomaly.py` (состояние в памяти процесса),
 доставка переиспользует `deliver()` из `send_push_metrics` с другим
-`User-Agent`. Контракт — `USAGE-ANOMALY.md`.
+`User-Agent`. При `throttle_enabled` тик ещё и вешает лимит нарушителю
+(`_apply_throttles` → `crud.upsert_anomaly_throttle` → `request_sync()`
+чёрного списка): своей инфраструктуры для ограничения канала у детектора
+нет, он пишет запись со сроком в `blacklist_users`. Контракт —
+`USAGE-ANOMALY.md`.
+
+Джоба чёрного списка: `run_sync` (каждые `JOB_SYNC_BLACKLIST_INTERVAL`)
+берёт включённые записи, спрашивает у ядра адреса этих пользователей и
+отдаёт пары «адрес → лимит» шейперу (`app/utils/shaper.py`). Мутации через
+API дергают `request_sync()` — отложенную на секунду разовую джобу, чтобы
+gRPC и `tc` не висели в HTTP-запросе. Пустой список — правила снимаются,
+тик стоит один SELECT. Здесь же снимаются истёкшие авто-замедления — то
+есть они истекают и при выключенном мониторинге аномалий. Контракт —
+`USAGE-BLACKLIST.md`.
 
 Не предлагайте несколько uvicorn-workers: scheduler один на процесс.

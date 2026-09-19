@@ -17,6 +17,7 @@ from app.db.models import (
     AdminUsageLogs,
     AnomalyScheduler,
     AnomalySettings,
+    BlacklistUser,
     NextPlan,
     Node,
     NodeUsage,
@@ -53,6 +54,7 @@ from app.models.anomaly import (
     AnomalySchedulerModify,
     AnomalySettingsModify,
 )
+from app.models.blacklist import BlacklistEntryModify
 from app.models.user_template import UserTemplateCreate, UserTemplateModify
 from app.utils.helpers import calculate_expiration_days, calculate_usage_percent
 from config import NOTIFY_DAYS_LEFT, NOTIFY_REACHED_USAGE_PERCENT, USERS_AUTODELETE_DAYS
@@ -1793,3 +1795,184 @@ def get_anomaly_clients(db: Session, usernames: List[str]) -> Dict[str, dict]:
             "admin": admins.get(r.admin_id),
         }
     return clients
+
+
+# ---------------------------------------------------------------------------
+# Blacklist (per-user bandwidth caps)
+# ---------------------------------------------------------------------------
+
+def get_blacklist_entries(db: Session) -> List[BlacklistUser]:
+    """Every cap, with its user loaded — the list the dashboard shows."""
+    return (
+        db.query(BlacklistUser)
+        .options(joinedload(BlacklistUser.user))
+        .order_by(BlacklistUser.id)
+        .all()
+    )
+
+
+def get_blacklist_entry(db: Session, user_id: int) -> Optional[BlacklistUser]:
+    """The cap of one user, or None when the user is not capped."""
+    return (
+        db.query(BlacklistUser)
+        .options(joinedload(BlacklistUser.user))
+        .filter(BlacklistUser.user_id == user_id)
+        .first()
+    )
+
+
+def get_active_blacklist(db: Session) -> List[Tuple[int, str, int, Optional[datetime]]]:
+    """(user_id, username, limit_mbps, expires_at) of the caps to install.
+
+    Disabled entries and users that cannot pass traffic anyway are left out,
+    so the reconciler never installs a rule nothing can hit. Expiry is handed
+    back rather than filtered here: the caller drops the caps whose time is up
+    and only then pays for the delete.
+    """
+    rows = (
+        db.query(
+            BlacklistUser.user_id,
+            User.username,
+            BlacklistUser.limit_mbps,
+            BlacklistUser.expires_at,
+        )
+        .join(User, User.id == BlacklistUser.user_id)
+        .filter(
+            BlacklistUser.is_enabled.is_(True),
+            User.status.in_((UserStatus.active, UserStatus.on_hold)),
+        )
+        .all()
+    )
+    return [(row[0], row[1], int(row[2]), row[3]) for row in rows]
+
+
+def create_blacklist_entry(
+    db: Session,
+    dbuser: User,
+    limit_mbps: int,
+    is_enabled: bool = True,
+    reason: Optional[str] = None,
+) -> BlacklistUser:
+    """Cap a user's bandwidth."""
+    entry = BlacklistUser(
+        user_id=dbuser.id,
+        limit_mbps=limit_mbps,
+        is_enabled=is_enabled,
+        reason=reason or None,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def update_blacklist_entry(
+    db: Session, entry: BlacklistUser, modify: BlacklistEntryModify
+) -> BlacklistUser:
+    """Partially update a cap.
+
+    Editing a cap the anomaly monitor installed makes it the operator's: it
+    stops expiring and the monitor will not touch it again. Anything else
+    would let the automation undo a decision made by hand.
+    """
+    data = modify.model_dump(exclude_unset=True)
+    for field in ("limit_mbps", "is_enabled"):
+        if data.get(field) is not None:
+            setattr(entry, field, data[field])
+    if "reason" in data:
+        entry.reason = data["reason"] or None
+
+    entry.source = "manual"
+    entry.expires_at = None
+
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def remove_blacklist_entry(db: Session, entry: BlacklistUser) -> None:
+    """Lift a cap. Deleting the user does the same through the relationship."""
+    db.delete(entry)
+    db.commit()
+
+
+def upsert_anomaly_throttle(
+    db: Session,
+    user_id: int,
+    limit_mbps: int,
+    duration_seconds: int,
+    reason: Optional[str] = None,
+) -> Tuple[Optional[BlacklistUser], str]:
+    """Cap an offender for a while. Returns the entry and what happened.
+
+    Outcomes: `created`, `extended` (an automatic cap was prolonged from now),
+    `manual` (an operator's cap is already in place and is left alone) and
+    `missing` (the user is gone).
+    """
+    expires_at = datetime.utcnow() + timedelta(seconds=duration_seconds)
+    entry = (
+        db.query(BlacklistUser)
+        .filter(BlacklistUser.user_id == user_id)
+        .first()
+    )
+
+    if entry is not None:
+        if entry.source != "anomaly":
+            return entry, "manual"
+        entry.expires_at = expires_at
+        # the monitor owns this row, so a cap changed in the settings applies
+        # to the offenders it is already holding
+        entry.limit_mbps = limit_mbps
+        entry.is_enabled = True
+        if reason:
+            entry.reason = reason
+        db.commit()
+        db.refresh(entry)
+        return entry, "extended"
+
+    if not db.query(User.id).filter(User.id == user_id).first():
+        return None, "missing"
+
+    entry = BlacklistUser(
+        user_id=user_id,
+        limit_mbps=limit_mbps,
+        is_enabled=True,
+        reason=reason or None,
+        source="anomaly",
+        expires_at=expires_at,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry, "created"
+
+
+def count_anomaly_throttles(db: Session) -> int:
+    """How many caps the anomaly monitor is holding right now."""
+    return (
+        db.query(func.count(BlacklistUser.id))
+        .filter(BlacklistUser.source == "anomaly")
+        .scalar()
+    ) or 0
+
+
+def expire_anomaly_throttles(db: Session) -> List[str]:
+    """Lift the automatic caps whose time is up; returns their usernames."""
+    expired = (
+        db.query(BlacklistUser)
+        .options(joinedload(BlacklistUser.user))
+        .filter(
+            BlacklistUser.source == "anomaly",
+            BlacklistUser.expires_at.isnot(None),
+            BlacklistUser.expires_at <= datetime.utcnow(),
+        )
+        .all()
+    )
+    if not expired:
+        return []
+
+    names = [entry.user.username for entry in expired if entry.user]
+    for entry in expired:
+        db.delete(entry)
+    db.commit()
+    return names

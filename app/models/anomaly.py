@@ -3,9 +3,21 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from config import ANOMALY_MIN_SAMPLE_INTERVAL
+from config import ANOMALY_MIN_SAMPLE_INTERVAL, BLACKLIST_MAX_MBPS
 
 SEVERITIES = ("low", "medium", "high", "critical")
+
+# a throttle shorter than a minute would expire before the next sample, the
+# upper bound keeps an "automatic" punishment from becoming a permanent one
+MIN_THROTTLE_SECONDS = 60
+MAX_THROTTLE_SECONDS = 7 * 86400
+
+
+def validate_severity(value: str) -> str:
+    value = (value or "low").strip().lower()
+    if value not in SEVERITIES:
+        raise ValueError(f"severity must be one of {', '.join(SEVERITIES)}")
+    return value
 
 
 class AnomalySeverity:
@@ -40,6 +52,19 @@ class AnomalySettingsBase(BaseModel):
     include_ips: bool = True
     max_ips_in_report: int = Field(default=20, ge=1, le=500)
 
+    # automatic response
+    throttle_enabled: bool = False
+    throttle_mbps: int = Field(default=10, ge=1, le=BLACKLIST_MAX_MBPS)
+    throttle_seconds: int = Field(
+        default=3600, ge=MIN_THROTTLE_SECONDS, le=MAX_THROTTLE_SECONDS
+    )
+    throttle_min_severity: str = AnomalySeverity.high
+
+    @field_validator("throttle_min_severity")
+    @classmethod
+    def validate_throttle_min_severity(cls, v: str) -> str:
+        return validate_severity(v)
+
 
 class AnomalySettingsModify(BaseModel):
     is_enabled: Optional[bool] = None
@@ -56,6 +81,17 @@ class AnomalySettingsModify(BaseModel):
     cooldown_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
     include_ips: Optional[bool] = None
     max_ips_in_report: Optional[int] = Field(default=None, ge=1, le=500)
+    throttle_enabled: Optional[bool] = None
+    throttle_mbps: Optional[int] = Field(default=None, ge=1, le=BLACKLIST_MAX_MBPS)
+    throttle_seconds: Optional[int] = Field(
+        default=None, ge=MIN_THROTTLE_SECONDS, le=MAX_THROTTLE_SECONDS
+    )
+    throttle_min_severity: Optional[str] = None
+
+    @field_validator("throttle_min_severity")
+    @classmethod
+    def validate_throttle_min_severity(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else validate_severity(v)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -66,6 +102,10 @@ class AnomalySettingsModify(BaseModel):
                 "max_concurrent_networks": 2,
                 "max_subnets": 3,
                 "min_traffic_rate_mbps": 5,
+                "throttle_enabled": True,
+                "throttle_mbps": 10,
+                "throttle_seconds": 3600,
+                "throttle_min_severity": "high",
             }
         }
     )
@@ -226,6 +266,19 @@ class AnomalyClient(BaseModel):
     note: Optional[str] = None
 
 
+class AnomalyThrottle(BaseModel):
+    """What the automatic response did about this anomaly."""
+
+    # false when a cap was wanted but an operator's own cap is already there
+    applied: bool = False
+    # created | extended | kept_manual
+    action: str
+    limit_mbps: int = 0
+    expires_at: Optional[float] = None
+    # who owns the cap now: the monitor ("anomaly") or an operator ("manual")
+    source: str = "anomaly"
+
+
 class AnomalyRecord(BaseModel):
     username: str
     severity: str
@@ -235,6 +288,23 @@ class AnomalyRecord(BaseModel):
     suppressed: bool = False
     evidence: AnomalyEvidence
     client: AnomalyClient
+    # present only when automatic throttling is on and this anomaly qualified
+    throttle: Optional[AnomalyThrottle] = None
+
+
+class AnomalyThrottlePolicy(BaseModel):
+    """The automatic response as configured, plus whether it can be applied."""
+
+    enabled: bool = False
+    limit_mbps: int = 0
+    duration_seconds: int = 0
+    min_severity: str = AnomalySeverity.high
+    # automatic caps in place right now
+    active: int = 0
+    # the kernel side of the blacklist; false means caps are recorded but not
+    # actually enforced, and `unavailable_reason` says why
+    enforceable: bool = True
+    unavailable_reason: Optional[str] = None
 
 
 class AnomalyMonitorInfo(BaseModel):
@@ -243,6 +313,7 @@ class AnomalyMonitorInfo(BaseModel):
     sample_interval: int = 0
     window_seconds: int = 0
     thresholds: Dict[str, Any] = {}
+    throttle: AnomalyThrottlePolicy = AnomalyThrottlePolicy()
     last_sample_at: Optional[float] = None
     last_error: Optional[str] = None
     nodes_sampled: List[str] = []

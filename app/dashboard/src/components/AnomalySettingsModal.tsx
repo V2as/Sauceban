@@ -294,6 +294,112 @@ const SettingsForm: FC<{ settings: AnomalySettingsType }> = ({ settings }) => {
   );
 };
 
+const ThrottleForm: FC<{
+  settings: AnomalySettingsType;
+  active?: number;
+}> = ({ settings, active = 0 }) => {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { updateSettings } = useAnomaly();
+  const form = useForm<AnomalySettingsType>({ defaultValues: settings });
+
+  useEffect(() => {
+    form.reset(settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(settings)]);
+
+  const { isLoading, mutate } = useMutation(updateSettings, {
+    onSuccess: () => {
+      generateSuccessMessage(t("anomaly.settingsSaved"), toast);
+      queryClient.invalidateQueries(FetchAnomalySettingsQueryKey);
+      queryClient.invalidateQueries(FetchAnomalyReportQueryKey);
+    },
+    onError: (e) => {
+      generateErrorMessage(e, toast, form);
+    },
+  });
+
+  const submit = (v: AnomalySettingsType) =>
+    mutate({
+      throttle_enabled: v.throttle_enabled,
+      throttle_mbps: v.throttle_mbps,
+      throttle_seconds: v.throttle_seconds,
+      throttle_min_severity: v.throttle_min_severity,
+    });
+
+  return (
+    <form onSubmit={form.handleSubmit(submit)}>
+      <VStack rowGap={3} alignItems="flex-start">
+        <Text fontSize="xs" opacity={0.8}>
+          {t("anomaly.throttleHint")}
+        </Text>
+        <Controller
+          name="throttle_enabled"
+          control={form.control}
+          render={({ field }) => (
+            <FormControl display="flex" alignItems="center">
+              <Switch
+                colorScheme="primary"
+                isChecked={!!field.value}
+                onChange={(e) => field.onChange(e.target.checked)}
+              />
+              <FormLabel mb="0" ml="2" fontSize="sm">
+                {t("anomaly.throttleEnabled")}
+              </FormLabel>
+            </FormControl>
+          )}
+        />
+        <SimpleGrid columns={{ base: 1, sm: 2 }} spacing={3} w="full">
+          <FormControl>
+            <CustomInput
+              label={t("anomaly.throttleLimit")}
+              size="sm"
+              type="number"
+              endAdornment={t("blacklist.mbps")}
+              {...form.register("throttle_mbps", { valueAsNumber: true })}
+              error={(form.formState?.errors as any)?.throttle_mbps?.message}
+            />
+          </FormControl>
+          <FormControl>
+            <CustomInput
+              label={t("anomaly.throttleDuration")}
+              size="sm"
+              type="number"
+              endAdornment={t("anomaly.throttleDurationUnit")}
+              {...form.register("throttle_seconds", { valueAsNumber: true })}
+              error={(form.formState?.errors as any)?.throttle_seconds?.message}
+            />
+          </FormControl>
+          <FormControl>
+            <FormLabel fontSize="sm">{t("anomaly.throttleSeverity")}</FormLabel>
+            <Select size="sm" {...form.register("throttle_min_severity")}>
+              {SEVERITIES.map((severity) => (
+                <option key={severity} value={severity}>
+                  {t(`anomaly.severity.${severity}`)}
+                </option>
+              ))}
+            </Select>
+          </FormControl>
+        </SimpleGrid>
+        <HStack w="full" justifyContent="space-between" pt={1}>
+          <Text fontSize="xs" color="gray.500" _dark={{ color: "gray.400" }}>
+            {t("anomaly.throttleActive", { count: active })}
+          </Text>
+          <Button
+            type="submit"
+            size="sm"
+            colorScheme="primary"
+            isLoading={isLoading}
+          >
+            {t("anomaly.saveSettings")}
+          </Button>
+        </HStack>
+      </VStack>
+    </form>
+  );
+};
+
 const AnomalyRow: FC<{ record: AnomalyRecordType }> = ({ record }) => {
   const { t } = useTranslation();
   const evidence = record.evidence;
@@ -326,6 +432,36 @@ const AnomalyRow: FC<{ record: AnomalyRecordType }> = ({ record }) => {
               <Tooltip label={t("anomaly.suppressedHint")} placement="top">
                 <Badge colorScheme="purple" rounded="full" px={2}>
                   <Text fontSize="0.65rem">{t("anomaly.suppressed")}</Text>
+                </Badge>
+              </Tooltip>
+            )}
+            {record.throttle && (
+              <Tooltip
+                label={
+                  record.throttle.applied
+                    ? t("anomaly.throttledHint", {
+                        until: record.throttle.expires_at
+                          ? dayjs(record.throttle.expires_at * 1000).format(
+                              "HH:mm"
+                            )
+                          : "",
+                      })
+                    : t("anomaly.throttleManualHint")
+                }
+                placement="top"
+              >
+                <Badge
+                  colorScheme={record.throttle.applied ? "red" : "gray"}
+                  rounded="full"
+                  px={2}
+                >
+                  <Text fontSize="0.65rem">
+                    {record.throttle.applied
+                      ? t("anomaly.throttled", {
+                          limit: record.throttle.limit_mbps,
+                        })
+                      : t("anomaly.throttleManual")}
+                  </Text>
                 </Badge>
               </Tooltip>
             )}
@@ -705,17 +841,29 @@ export const AnomalySettingsDialog: FC = () => {
     onEditingAnomaly(false);
   };
 
-  const toggleAccordion = (index: number | string) => {
-    if (openAccordions[String(index)]) {
-      delete openAccordions[String(index)];
+  const toggleAccordion = (key: number | string) => {
+    if (openAccordions[String(key)]) {
+      delete openAccordions[String(key)];
     } else {
-      openAccordions[String(index)] = {};
+      openAccordions[String(key)] = {};
     }
     setOpenAccordions({ ...openAccordions });
   };
 
   const anomalies = report?.anomalies || [];
   const monitor = report?.monitor;
+
+  // Chakra wants positions, not keys: everything is addressed by a stable key
+  // so that adding a section (or deleting a webhook) cannot open the wrong one
+  const sections = ["settings", "throttle", "report"];
+  const keys = [
+    ...sections,
+    ...(schedulers || []).map((scheduler) => `scheduler-${scheduler.id}`),
+    "add",
+  ];
+  const openIndexes = keys
+    .map((key, index) => (openAccordions[key] ? index : -1))
+    .filter((index) => index >= 0);
 
   return (
     <Modal isOpen={isEditingAnomaly} onClose={onClose} size="2xl">
@@ -773,11 +921,7 @@ export const AnomalySettingsDialog: FC = () => {
               <Spinner />
             </HStack>
           ) : (
-            <Accordion
-              w="full"
-              allowToggle
-              index={Object.keys(openAccordions).map((i) => parseInt(i))}
-            >
+            <Accordion w="full" allowToggle index={openIndexes}>
               <VStack w="full" rowGap={3}>
                 <AccordionItem
                   border="1px solid"
@@ -807,6 +951,51 @@ export const AnomalySettingsDialog: FC = () => {
                   </AccordionButton>
                   <AccordionPanel px={2} pb={3}>
                     {settings && <SettingsForm settings={settings} />}
+                  </AccordionPanel>
+                </AccordionItem>
+
+                <AccordionItem
+                  border="1px solid"
+                  _dark={{ borderColor: "gray.600" }}
+                  _light={{ borderColor: "gray.200" }}
+                  borderRadius="4px"
+                  p={1}
+                  w="full"
+                >
+                  <AccordionButton
+                    px={2}
+                    borderRadius="3px"
+                    onClick={() => toggleAccordion("throttle")}
+                  >
+                    <HStack w="full" justifyContent="space-between" pr={2}>
+                      <Text
+                        as="span"
+                        fontWeight="medium"
+                        fontSize="sm"
+                        flex="1"
+                        textAlign="left"
+                        color="gray.700"
+                        _dark={{ color: "gray.300" }}
+                      >
+                        {t("anomaly.throttleSettings")}
+                      </Text>
+                      {settings?.throttle_enabled && (
+                        <Badge colorScheme="red" rounded="full" px={3} py={1}>
+                          <Text fontSize="0.7rem" fontWeight="medium">
+                            {monitor?.throttle?.active || 0}
+                          </Text>
+                        </Badge>
+                      )}
+                    </HStack>
+                    <AccordionIcon />
+                  </AccordionButton>
+                  <AccordionPanel px={2} pb={3}>
+                    {settings && (
+                      <ThrottleForm
+                        settings={settings}
+                        active={monitor?.throttle?.active || 0}
+                      />
+                    )}
                   </AccordionPanel>
                 </AccordionItem>
 
@@ -865,17 +1054,17 @@ export const AnomalySettingsDialog: FC = () => {
                   </AccordionPanel>
                 </AccordionItem>
 
-                {(schedulers || []).map((scheduler, index) => (
+                {(schedulers || []).map((scheduler) => (
                   <SchedulerAccordion
                     key={scheduler.id}
                     scheduler={scheduler}
-                    toggleAccordion={() => toggleAccordion(index)}
+                    toggleAccordion={() =>
+                      toggleAccordion(`scheduler-${scheduler.id}`)
+                    }
                   />
                 ))}
                 <AddSchedulerForm
-                  toggleAccordion={() =>
-                    toggleAccordion((schedulers || []).length)
-                  }
+                  toggleAccordion={() => toggleAccordion("add")}
                   resetAccordions={() => setOpenAccordions({})}
                 />
               </VStack>

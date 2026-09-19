@@ -6,6 +6,10 @@ services:
     restart: always
     env_file: .env
     network_mode: host
+    # lets the panel install the traffic-control rules the bandwidth
+    # blacklist is enforced with; drop it and the caps are bookkeeping only
+    cap_add:
+      - NET_ADMIN
     volumes:
       - /var/lib/marzban:/var/lib/marzban
       - /var/lib/marzban/logs:/var/lib/marzban-node

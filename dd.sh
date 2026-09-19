@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DD_VERSION="2.7.0-20260907"
+DD_VERSION="2.7.1-20260907"
 
 # ============================================================================
 #  Marzban deploy helper — nginx + haproxy + acme.sh + sysctl tuning
@@ -237,13 +237,37 @@ wait_for_apt() {
     done
 }
 
+# Ребут посреди apt (провайдер применяет заказанный IPv4 перезагрузкой через
+# 3-4 минуты после создания ВМ) обрывает dpkg на полуслове, и дальше любой
+# apt-get отказывается работать с "dpkg was interrupted". Состояние чинится
+# ровно одной командой, поэтому чиним сами, а не падаем и просим оператора.
+repair_dpkg() {
+    # Прерванную транзакцию dpkg отмечает файлами в /var/lib/dpkg/updates;
+    # --audit ловит остальные полусобранные состояния.
+    local interrupted=false
+    compgen -G "/var/lib/dpkg/updates/*" >/dev/null 2>&1 && interrupted=true
+    [[ -n "$(dpkg --audit 2>/dev/null)" ]] && interrupted=true
+    [[ "$interrupted" == true ]] || return 0
+
+    log_warn "dpkg is in an interrupted state — running 'dpkg --configure -a'"
+    wait_for_apt
+    if DEBIAN_FRONTEND=noninteractive dpkg --configure -a \
+         --force-confold --force-confdef >/dev/null 2>&1; then
+        log_ok "dpkg state repaired"
+    else
+        log_warn "dpkg --configure -a failed — apt may still refuse to run"
+    fi
+}
+
 apt_update() {
     wait_for_apt
+    repair_dpkg
     apt-get update -qq
 }
 
 apt_install() {
     wait_for_apt
+    repair_dpkg
     apt-get install -y -o Dpkg::Options::="--force-confold" \
                        -o Dpkg::Options::="--force-confdef" "$@"
 }

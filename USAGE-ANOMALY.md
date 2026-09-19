@@ -7,8 +7,10 @@ out to friends), plus configurable webhook targets that receive the findings.
 It answers one question: *is a single subscription being used by more people
 than it was sold for, and is that actually loading the server?*
 
-Nobody is blocked, throttled or disabled — the feature only reports. What the
-receiving side does with a report is its own decision.
+Nobody is blocked or disabled. By default the feature only reports, and what
+the receiving side does with a report is its own decision; optionally it can
+also **slow an offender down for a while** — see
+[Throttling offenders automatically](#throttling-offenders-automatically).
 
 It is fully additive. With monitoring disabled (the default) nothing runs, no
 extra queries are made, and the existing push-metrics feature
@@ -22,6 +24,7 @@ extra queries are made, and the existing push-metrics feature
 - [Requirements](#requirements)
 - [Turning the monitor on and off](#turning-the-monitor-on-and-off)
 - [Tuning the detector](#tuning-the-detector)
+- [Throttling offenders automatically](#throttling-offenders-automatically)
 - [Managing webhook targets via the API](#managing-webhook-targets-via-the-api)
 - [Managing everything via marzban-cli](#managing-everything-via-marzban-cli)
 - [Managing everything via the dashboard](#managing-everything-via-the-dashboard)
@@ -159,6 +162,7 @@ the fields you want to change.
 | `cooldown_seconds` | `900` | Per-user re-report suppression. |
 | `include_ips` | `true` | Send raw source IPs as evidence. |
 | `max_ips_in_report` | `20` | Cap on IPs per reported user. |
+| `throttle_*` | off | The automatic response, see [Throttling offenders automatically](#throttling-offenders-automatically). |
 
 The defaults are deliberately conservative: they catch a key used from several
 households simultaneously and stay quiet about one person with a phone, a
@@ -179,6 +183,68 @@ curl https://your-panel/api/anomaly/users/john/activity \
 
 `GET /report` is read-only: it does not advance sustained-hit counters or
 cooldowns, so polling it cannot change what the webhooks receive.
+
+---
+
+## Throttling offenders automatically
+
+Reporting is the default response; with `throttle_enabled` the monitor can also
+act. An anomaly at or above `throttle_min_severity` caps the offender's
+bandwidth at `throttle_mbps` for `throttle_seconds`, after which the cap lifts
+itself.
+
+The cap is a row in the blacklist the shaper already reconciles
+([`USAGE-BLACKLIST.md`](USAGE-BLACKLIST.md)), marked `source: "anomaly"` and
+carrying an `expires_at`. That means a throttled user appears in the blacklist
+UI and API next to the caps you set by hand, is enforced the same way (Linux
+`tc`, per direction, panel host only), and can be lifted early by deleting the
+entry.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `throttle_enabled` | `false` | Master switch of the automatic response. |
+| `throttle_mbps` | `10` | Cap applied to an offender, in Mbit/s per direction (max `BLACKLIST_MAX_MBPS`). |
+| `throttle_seconds` | `3600` | How long a cap lasts, counted from the last time the anomaly was seen (60 … 604800). |
+| `throttle_min_severity` | `high` | Lowest severity worth capping. Kept apart from a webhook's `min_severity`: reporting an anomaly and punishing it are different decisions. |
+
+```bash
+curl -X PUT https://your-panel/api/anomaly/settings \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"throttle_enabled": true, "throttle_mbps": 10,
+       "throttle_seconds": 3600, "throttle_min_severity": "high"}'
+
+# CLI
+marzban cli anomaly configure --throttle --throttle-mbps 10 \
+    --throttle-seconds 3600 --throttle-min-severity high
+```
+
+Rules of the automatic response:
+
+- **An operator outranks the automation.** If the user already has a cap you
+  set by hand, it is left exactly as it is and the report says
+  `action: "kept_manual"`. Editing an automatic cap in the UI or through
+  `PUT /api/blacklist/{username}` makes it yours: it becomes `manual`, stops
+  expiring, and the monitor will not touch it again.
+- **A continuing anomaly prolongs the cap, it does not tighten it.** Every
+  sample the user is still anomalous pushes `expires_at` to
+  `now + throttle_seconds`, so the timer effectively starts when the sharing
+  stops. Suppressed (cooling-down) findings count here — they are the same
+  anomaly still going on.
+- **Caps expire on their own**, lifted by the blacklist reconciler within
+  `JOB_SYNC_BLACKLIST_INTERVAL` seconds. This also happens while monitoring is
+  switched off, so disabling the monitor never hands an abuser its bandwidth
+  back instantly, and never leaves a forgotten cap behind.
+- **Deleting the user deletes the cap**, through the same cascade as a manual
+  blacklist entry.
+- **A cap on a node cannot be enforced.** Shaping happens on the panel host, so
+  a user seen only through a remote node gets a recorded cap that nothing
+  applies. The same is true when `BLACKLIST_ENFORCE` is off or `tc` is
+  unavailable: `monitor.throttle.enforceable` is then `false`,
+  `unavailable_reason` says why, and the warning also shows up in the
+  dashboard.
+
+`monitor.throttle` in the report (and in the dashboard) shows the policy plus
+`active`, the number of automatic caps in place right now.
 
 ---
 
@@ -269,6 +335,8 @@ marzban cli anomaly enable
 marzban cli anomaly disable
 marzban cli anomaly configure --max-concurrent-networks 3 --min-rate 5 \
     --window 600 --cooldown 1800
+marzban cli anomaly configure --throttle --throttle-mbps 10 \
+    --throttle-seconds 3600 --throttle-min-severity high
 marzban cli anomaly report                    # what the monitor sees right now
 
 marzban cli anomaly list
@@ -296,8 +364,11 @@ Menu (☰) → **"Anomaly Monitor"** (sudo admins only):
 - the master switch, with the current IP source, online/tracked counts and any
   warnings from the last sample;
 - **Detection settings** — every threshold from the table above;
+- **Automatic throttling** — the switch, the cap, its duration and the severity
+  floor, with the number of caps currently in place in the section header;
 - **Live anomalies** — what is being detected right now, with the rules that
   fired, the score and the evidence, including users held back by a cooldown;
+  a throttled user carries a badge with its cap and the time it lifts;
 - one accordion per webhook target: name, URL, secret, spacing, severity floor,
   *Send even when there is nothing to report*, a status badge, **Send now** and
   delete.
@@ -328,6 +399,15 @@ push-metrics pushes (`Marzban-PushMetrics/1.0`) on a shared receiver.
     "thresholds": { "max_concurrent_networks": 2, "max_subnets": 3, "max_ips": 6,
                     "min_hits": 2, "min_traffic_rate_mbps": 5.0,
                     "traffic_spike_ratio": 3.0, "cooldown_seconds": 900 },
+    "throttle": {                    // the automatic response
+      "enabled": true,
+      "limit_mbps": 10,
+      "duration_seconds": 3600,
+      "min_severity": "high",
+      "active": 1,                   // automatic caps in place right now
+      "enforceable": true,           // false = recorded but not applied
+      "unavailable_reason": null
+    },
     "last_sample_at": 1788712119.67,
     "last_error": null,
     "nodes_sampled": ["master", "de-1"],
@@ -398,6 +478,15 @@ push-metrics pushes (`Marzban-PushMetrics/1.0`) on a shared receiver.
         "sub_last_user_agent": "v2rayNG/1.8.19",
         "admin": "superadmin",
         "note": "sold as 3 devices"
+      },
+
+      // present only while automatic throttling is on and this user qualified
+      "throttle": {
+        "applied": true,              // false = an operator's cap was kept
+        "action": "extended",         // created | extended | kept_manual
+        "limit_mbps": 10,
+        "expires_at": 1788715719.0,   // unix seconds, null for a manual cap
+        "source": "anomaly"           // anomaly | manual
       }
     }
   ]
@@ -454,9 +543,9 @@ A receiver can rely on the following:
 ## Configuration
 
 Runtime configuration lives in the database (`anomaly_settings` and
-`anomaly_schedulers`, added by Alembic migration `b7c8d9e0f1a2`) and is managed
-through the API / CLI / dashboard. These optional environment variables tune
-the plumbing:
+`anomaly_schedulers`, added by Alembic migration `b7c8d9e0f1a2`; the throttling
+columns by `d4e5f6a7b8c9`) and is managed through the API / CLI / dashboard.
+These optional environment variables tune the plumbing:
 
 | Variable | Default | Description |
 |---|---|---|

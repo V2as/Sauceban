@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from . import (
     admin, 
     anomaly,
+    blacklist,
     core, 
     node, 
     notification,
@@ -17,6 +18,7 @@ api_router = APIRouter()
 routers = [
     admin.router,
     anomaly.router,
+    blacklist.router,
     core.router,
     node.router,
     notification.router,

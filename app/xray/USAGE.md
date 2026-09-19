@@ -16,10 +16,14 @@
 
 `config.py` принудительно выставляет `policy.levels."0"`:
 `statsUserUplink`/`statsUserDownlink` (учёт трафика) и `statsUserOnline`
-(online-IP для детектора аномалий). Ядра, которые не знают `statsUserOnline`,
+(online-IP для детектора аномалий и лимитов канала). Ядра, которые не знают `statsUserOnline`,
 ключ игнорируют. Сами online-IP читаются RPC-обёртками из
 `xray_api/online.py` (`Stats.get_users_online_stats`,
 `get_all_online_users`, `get_user_online_ips`) — их нет в сгенерированных
 стабах. Каждая появилась в своей версии ядра (`v26.4.13` / `v25.12.1` /
-`v25.2.18`), отсюда лестница фолбэков в `app/jobs/detect_anomalies.py`;
-подробнее — `MEMORY.md`.
+`v25.2.18`), отсюда лестница фолбэков в `app/jobs/detect_anomalies.py` и
+`app/jobs/sync_blacklist.py`; подробнее — `MEMORY.md`.
+
+`get_all_online_users` / `get_users_online_stats` отдают **голый email**:
+ядро возвращает имя счётчика (`user>>>EMAIL>>>online`), обёртка его
+разбирает. Сравнивать с `f"{user.id}.{user.username}"` можно напрямую.

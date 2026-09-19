@@ -6,6 +6,11 @@ the monitor reports to the configured webhooks. A reconciler keeps that job in
 sync with the `anomaly_settings` row, so the monitor can be switched on and
 off, and its interval changed, at runtime through the API / CLI / dashboard.
 
+Reporting is the default response, but the monitor can also act: with
+`throttle_enabled` an anomaly at or above `throttle_min_severity` caps the
+offender's bandwidth for `throttle_seconds`, by writing an expiring row into
+the blacklist the shaper reconciles (`app/jobs/sync_blacklist.py`).
+
 Nothing runs unless monitoring is enabled: with `is_enabled` false the sampler
 job is removed and the window state dropped.
 
@@ -20,6 +25,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime as dt
 from datetime import timedelta as td
+from datetime import timezone
 from typing import Dict, List, Optional, Tuple
 
 from app import logger, scheduler, xray
@@ -30,6 +36,7 @@ from app.models.anomaly import (AnomalyClient, AnomalyEvidence, AnomalyIp,
                                 AnomalyRecord, AnomalyReport,
                                 AnomalySchedulerResponse,
                                 AnomalySettingsResponse, AnomalySummary,
+                                AnomalyThrottle, AnomalyThrottlePolicy,
                                 severity_rank)
 from app.utils.anomaly import Finding, Observation, monitor
 from config import (ANOMALY_PROBE_LIMIT, ANOMALY_STATS_TIMEOUT,
@@ -53,6 +60,9 @@ _node_names: Dict[int, str] = {}
 _last_push: Dict[int, float] = {}
 # scheduler id -> {username: finding} still waiting to be delivered
 _pending: Dict[int, Dict[str, Finding]] = {}
+# username -> what the automatic response last did, kept until the cap expires
+# so a report that waited in a queue still says the user is capped
+_throttles: Dict[str, AnomalyThrottle] = {}
 # user id -> used_traffic, only used by the per-user probe fallback
 _probe_traffic: Dict[int, int] = {}
 
@@ -214,6 +224,99 @@ def _sample(settings) -> None:
             logger.debug(f"anomaly traffic sampling failed: {err}")
 
 
+def _utc_ts(value: Optional[dt]) -> Optional[float]:
+    """Unix timestamp of a naive UTC column, independent of the host's zone."""
+    return None if value is None else value.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _apply_throttles(settings, findings: List[Finding]) -> Dict[str, AnomalyThrottle]:
+    """Cap the offenders whose anomaly is bad enough; returns what was done.
+
+    Runs before delivery so the report can say what happened to each user.
+    Suppressed findings count here: they are the same anomaly still going on,
+    which is exactly what should keep a cap alive, even though it must not be
+    reported again. A cap an operator installed by hand is left untouched.
+    """
+    now = time.time()
+    for username, throttle in list(_throttles.items()):
+        if throttle.expires_at and throttle.expires_at <= now:
+            del _throttles[username]
+
+    floor = severity_rank(settings.throttle_min_severity)
+    targets = [
+        finding for finding in findings
+        if finding.user_id is not None and severity_rank(finding.severity) >= floor
+    ]
+    if not targets:
+        return _throttles
+
+    applied: Dict[str, AnomalyThrottle] = {}
+    try:
+        with GetDB() as db:
+            for finding in targets:
+                entry, action = crud.upsert_anomaly_throttle(
+                    db, finding.user_id,
+                    limit_mbps=settings.throttle_mbps,
+                    duration_seconds=settings.throttle_seconds,
+                    reason=f"anomaly: {finding.severity} (score {finding.score})",
+                )
+                if entry is None:  # user deleted between sampling and now
+                    continue
+                if action == "created":
+                    logger.info(
+                        f"Anomaly throttle: {finding.username} capped at "
+                        f"{entry.limit_mbps} Mbit/s for {settings.throttle_seconds}s "
+                        f"({finding.severity}, score {finding.score})"
+                    )
+                applied[finding.username] = AnomalyThrottle(
+                    applied=action in ("created", "extended"),
+                    action="kept_manual" if action == "manual" else action,
+                    limit_mbps=entry.limit_mbps,
+                    expires_at=_utc_ts(entry.expires_at),
+                    source=entry.source,
+                )
+    except Exception as err:
+        logger.warning(f"Anomaly throttling failed: {err}")
+    else:
+        if any(throttle.applied for throttle in applied.values()):
+            # the cap is only real once the shaper installed it, and waiting
+            # for the next reconciliation tick would add seconds of abuse at
+            # full speed
+            from app.jobs.sync_blacklist import request_sync as request_shaper_sync
+            request_shaper_sync()
+
+    _throttles.update(applied)
+    return _throttles
+
+
+def _throttle_policy(settings) -> AnomalyThrottlePolicy:
+    """The automatic response as configured, plus whether it can be applied."""
+    from app.jobs.sync_blacklist import status as blacklist_status
+
+    enabled = bool(getattr(settings, "throttle_enabled", False))
+    policy = AnomalyThrottlePolicy(
+        enabled=enabled,
+        limit_mbps=int(getattr(settings, "throttle_mbps", 0) or 0),
+        duration_seconds=int(getattr(settings, "throttle_seconds", 0) or 0),
+        min_severity=getattr(settings, "throttle_min_severity", "high"),
+    )
+    try:
+        with GetDB() as db:
+            policy.active = crud.count_anomaly_throttles(db)
+    except Exception as err:
+        logger.debug(f"anomaly throttle count unavailable: {err}")
+
+    if enabled or policy.active:
+        state = blacklist_status()
+        policy.enforceable = bool(state.get("enforce") and state.get("available"))
+        if not policy.enforceable:
+            policy.unavailable_reason = (
+                state.get("unavailable_reason")
+                or "bandwidth enforcement is switched off (BLACKLIST_ENFORCE)"
+            )
+    return policy
+
+
 def monitor_info(settings) -> AnomalyMonitorInfo:
     status = monitor.status()
     warnings = list(status["warnings"])
@@ -222,6 +325,12 @@ def monitor_info(settings) -> AnomalyMonitorInfo:
         version = getattr(xray.core, "version", None)
         if version:
             warnings.append(f"running Xray core: {version}")
+    policy = _throttle_policy(settings)
+    if policy.enabled and not policy.enforceable:
+        warnings.append(
+            "automatic throttling is on, but the caps cannot be applied: "
+            f"{policy.unavailable_reason}"
+        )
     return AnomalyMonitorInfo(
         is_enabled=bool(settings.is_enabled),
         ip_source=status["ip_source"],
@@ -236,6 +345,7 @@ def monitor_info(settings) -> AnomalyMonitorInfo:
             "traffic_spike_ratio": settings.traffic_spike_ratio,
             "cooldown_seconds": settings.cooldown_seconds,
         },
+        throttle=policy,
         last_sample_at=status["last_sample_at"],
         last_error=status["last_error"],
         nodes_sampled=status["nodes_sampled"],
@@ -250,7 +360,12 @@ def build_report(settings, findings: List[Finding],
                  scheduler_id: Optional[int] = None,
                  scheduler_name: Optional[str] = None,
                  collected_in_ms: float = 0.0) -> AnomalyReport:
-    """Turn findings into the payload that goes out over the webhook."""
+    """Turn findings into the payload that goes out over the webhook.
+
+    Records of users the automatic response is holding carry a `throttle`
+    block, so a receiver (and the dashboard, which renders the same report)
+    can tell "detected" from "detected and already capped".
+    """
     clients: Dict[str, dict] = {}
     if findings:
         try:
@@ -313,6 +428,7 @@ def build_report(settings, findings: List[Finding],
                 admin=client.get("admin"),
                 note=client.get("note"),
             ),
+            throttle=_throttles.get(finding.username),
         ))
 
     return AnomalyReport(
@@ -345,7 +461,8 @@ def _queue(scheduler_id: int, findings: List[Finding]) -> None:
 
 
 def deliver_report(dbscheduler, settings, findings: List[Finding],
-                   collected_in_ms: float = 0.0) -> Tuple[bool, Optional[int], Optional[str]]:
+                   collected_in_ms: float = 0.0
+                   ) -> Tuple[bool, Optional[int], Optional[str]]:
     """Push one report to one target and record the outcome."""
     from app.jobs.send_push_metrics import deliver
 
@@ -429,6 +546,10 @@ def run_sample() -> None:
 
     _sample(settings)
     findings = monitor.evaluate(settings, mutate=True)
+    if settings.throttle_enabled:
+        _apply_throttles(settings, findings)
+    elif _throttles:
+        _throttles.clear()
     if findings:
         _push(settings, findings)
 
@@ -460,6 +581,10 @@ def sync_anomaly_monitor() -> None:
             _pending.clear()
             _last_push.clear()
             _probe_traffic.clear()
+            # the caps already handed out are not revoked here: they expire on
+            # their own, so switching the monitor off does not hand an abuser
+            # its bandwidth back a second later
+            _throttles.clear()
         _state["interval"] = None
         return
 
