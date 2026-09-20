@@ -20,6 +20,10 @@ What follows from that:
 
 - **The unit is an address, not an account.** A user with a phone and a laptop
   gets the cap on each; clients behind one NAT address share one cap.
+- **Only what a client opened is metered.** Connection tracking tells a client
+  apart from a site the panel fetched on its behalf — both are on the far side
+  of the same interface, and bucketing the latter by its own address would
+  make one popular host a bucket shared by every client using it.
 - **Both directions are policed** (over-rate packets dropped) rather than
   queued, like the upload side of the blacklist already is. Queueing a
   download needs a queue per address, which is the very thing being avoided.
@@ -72,12 +76,23 @@ def _ruleset(interface: str, mbps: int) -> str:
 
     def rules(direction: str, counter: str) -> str:
         # `oifname`/`iifname` keeps the cap on the interface that carries the
-        # tunnels: loopback and the docker bridges stay untouched
-        device = "oifname" if direction == "down" else "iifname"
-        field = "daddr" if direction == "down" else "saddr"
+        # tunnels: loopback and the docker bridges stay untouched.
+        #
+        # `ct direction` is what makes the far end of a packet the *client*.
+        # Both a client and a site the panel fetches for it sit on the other
+        # side of this interface; the client is the one that opened the
+        # connection, so its packets are the original direction on the way in
+        # and the reply direction on the way out. Without that test the rules
+        # also bucket what comes back from a site, keyed by the site's address
+        # — and everyone downloading from the same host ends up sharing one
+        # bucket instead of getting one each.
+        device, field, ct = (
+            ("oifname", "daddr", "reply") if direction == "down"
+            else ("iifname", "saddr", "original")
+        )
         return "\n".join(
-            f'\t\t{device} "{interface}" update @{direction}{version} '
-            f"{{ {family} {field} {limit} }} "
+            f'\t\t{device} "{interface}" ct direction {ct} '
+            f"update @{direction}{version} {{ {family} {field} {limit} }} "
             f'counter name "{counter}" drop'
             for version, family in (("4", "ip"), ("6", "ip6"))
         )

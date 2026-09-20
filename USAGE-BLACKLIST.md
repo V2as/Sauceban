@@ -113,8 +113,16 @@ update a dynamic set keyed by the client address, with a rate limit attached to
 every element:
 
 ```
-update @down4 { ip daddr limit rate over 25000000 bytes/second } drop
+ct direction reply update @down4 { ip daddr limit rate over 25000000 bytes/second } drop
 ```
+
+`ct direction` is what makes the address in the rule a *client's*. Both a client
+and a site the panel fetched for it are on the far side of this interface, and
+the client is the one that opened the connection: its packets are the original
+direction coming in and the reply direction going out. Without that test the
+data coming back from a site is bucketed by the *site's* address, so everyone
+downloading from the same host — or, on a panel that chains to an upstream
+server, simply everyone — shares one bucket instead of getting one each.
 
 The first packet of an address creates its token bucket, packets over the rate
 are dropped, and an address that goes quiet is forgotten after
@@ -165,12 +173,14 @@ What is worth knowing before switching it on:
   thing this avoids. TCP settles at the cap on its own, at the price of some
   retransmissions — the same trade the upload side of the blacklist already
   makes.
-- **It covers all traffic on the shaped interface**, not only the tunnels: the
-  rules match on addresses, not on Xray's ports. In practice that is what you
-  want (a 200 Mbit/s cap per address is invisible to the panel's own traffic),
-  but it is worth knowing that a node, a database or an SSH session on that
-  interface is capped per address too. Loopback and the docker bridges are not
-  touched.
+- **It covers everything that connects to the panel**, not only the tunnels:
+  the rules match on addresses, not on Xray's ports, so an SSH session or the
+  dashboard is capped per address too. What the panel dials out itself — a
+  node link, a database, an update — is not capped, because there the far end
+  is not a client. Loopback and the docker bridges are never touched.
+- **Untracked traffic escapes the cap.** Telling a client from a site needs
+  connection tracking; a `notrack` rule in the raw table would make the
+  metering rules skip that traffic entirely.
 - **Changing the rate resets the buckets.** The table is replaced as a whole, so
   every tracked address is forgotten and its cap starts fresh.
 - **The rules are checked once a minute.** A `nft flush ruleset` from an
