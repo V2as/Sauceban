@@ -22,9 +22,10 @@ WORKDIR /code
 
 RUN rm -rf $PYTHON_LIB_PATH/*
 
-# iproute2 carries `tc`, which enforces the per-user bandwidth caps
+# iproute2 carries `tc` (per-user bandwidth caps), nftables carries `nft` (the
+# panel-wide cap every address gets on its own)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends iproute2 \
+    && apt-get install -y --no-install-recommends iproute2 nftables \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build $PYTHON_LIB_PATH $PYTHON_LIB_PATH

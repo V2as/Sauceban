@@ -17,6 +17,7 @@ from app.db.models import (
     AdminUsageLogs,
     AnomalyScheduler,
     AnomalySettings,
+    BandwidthSettings,
     BlacklistUser,
     NextPlan,
     Node,
@@ -54,7 +55,7 @@ from app.models.anomaly import (
     AnomalySchedulerModify,
     AnomalySettingsModify,
 )
-from app.models.blacklist import BlacklistEntryModify
+from app.models.blacklist import BlacklistEntryModify, GlobalLimitModify
 from app.models.user_template import UserTemplateCreate, UserTemplateModify
 from app.utils.helpers import calculate_expiration_days, calculate_usage_percent
 from config import NOTIFY_DAYS_LEFT, NOTIFY_REACHED_USAGE_PERCENT, USERS_AUTODELETE_DAYS
@@ -1976,3 +1977,32 @@ def expire_anomaly_throttles(db: Session) -> List[str]:
         db.delete(entry)
     db.commit()
     return names
+
+
+# ---------------------------------------------------------------------------
+# Bandwidth settings (the panel-wide cap every address gets on its own)
+# ---------------------------------------------------------------------------
+
+def get_bandwidth_settings(db: Session) -> BandwidthSettings:
+    """Return the panel-wide limits, creating the default row on first use."""
+    settings = db.query(BandwidthSettings).order_by(BandwidthSettings.id).first()
+    if settings is None:
+        settings = BandwidthSettings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+def update_bandwidth_settings(
+    db: Session, modify: GlobalLimitModify
+) -> BandwidthSettings:
+    """Partially update the panel-wide limits."""
+    settings = get_bandwidth_settings(db)
+    for field, value in modify.model_dump(exclude_unset=True).items():
+        if value is not None:
+            setattr(settings, field, value)
+
+    db.commit()
+    db.refresh(settings)
+    return settings

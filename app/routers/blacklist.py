@@ -8,8 +8,10 @@ from app.jobs.sync_blacklist import request_sync, shaped_ips, status
 from app.models.admin import Admin
 from app.models.blacklist import (BlacklistEntryCreate, BlacklistEntryModify,
                                   BlacklistEntryResponse, BlacklistResponse,
-                                  BlacklistStatus)
+                                  BlacklistStatus, GlobalLimitModify,
+                                  GlobalLimitStatus)
 from app.utils import responses
+from app.utils.global_limiter import global_limiter
 from app.utils.shaper import shaper
 
 router = APIRouter(
@@ -45,6 +47,19 @@ def _response(
     )
 
 
+def _global_status(db: Session) -> GlobalLimitStatus:
+    """The panel-wide cap: the setting plus what the kernel says about it."""
+    settings = crud.get_bandwidth_settings(db)
+    dropped_down, dropped_up = global_limiter.drops()
+    return GlobalLimitStatus(
+        global_enabled=settings.global_enabled,
+        global_mbps=settings.global_mbps,
+        dropped_packets_down=dropped_down,
+        dropped_packets_up=dropped_up,
+        **global_limiter.status(),
+    )
+
+
 def _get_entry(db: Session, username: str) -> BlacklistUser:
     dbuser = crud.get_user(db, username)
     if not dbuser:
@@ -69,6 +84,7 @@ def get_blacklist(
     ips, traffic = shaped_ips(), shaper.traffic()
     info = status()
     info["entries_total"] = len(entries)
+    info["global_limit"] = _global_status(db)
     return BlacklistResponse(
         entries=[_response(entry, ips, traffic) for entry in entries],
         status=BlacklistStatus(**info),
@@ -83,7 +99,35 @@ def get_blacklist_status(
     """Enforcement state on its own, for polling without the whole list."""
     info = status()
     info["entries_total"] = len(crud.get_blacklist_entries(db))
+    info["global_limit"] = _global_status(db)
     return BlacklistStatus(**info)
+
+
+# declared before the /{username} routes, which would otherwise swallow the path
+@router.get("/settings", response_model=GlobalLimitStatus)
+def get_bandwidth_settings(
+    db: Session = Depends(get_db),
+    admin: Admin = Depends(Admin.check_sudo_admin),
+):
+    """The panel-wide cap: is it on, how fast, and is it really installed."""
+    return _global_status(db)
+
+
+@router.put("/settings", response_model=GlobalLimitStatus)
+def update_bandwidth_settings(
+    modified: GlobalLimitModify,
+    db: Session = Depends(get_db),
+    admin: Admin = Depends(Admin.check_sudo_admin),
+):
+    """Turn the panel-wide cap on or off, or change how much each address gets.
+
+    The limit is per address: `global_mbps: 200` gives every client address 200
+    Mbit/s in each direction, it is not a budget shared between them. A user
+    that also has a blacklist entry gets whichever of the two caps is stricter.
+    """
+    crud.update_bandwidth_settings(db, modified)
+    request_sync()
+    return _global_status(db)
 
 
 @router.post(

@@ -511,3 +511,21 @@ class BlacklistUser(Base):
     expires_at = Column(DateTime, nullable=True, default=None, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BandwidthSettings(Base):
+    """Single-row configuration of the cap every address gets on its own.
+
+    Kept in the database rather than in the environment because it is operated
+    from the dashboard: a panel-wide speed limit is something you turn on and
+    off while watching the server, not something you redeploy for."""
+
+    __tablename__ = "bandwidth_settings"
+
+    id = Column(Integer, primary_key=True)
+    # master switch of the panel-wide cap; off means nothing is installed
+    global_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
+    # megabits per second handed to each address separately, per direction
+    global_mbps = Column(Integer, nullable=False, default=200, server_default=text("200"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

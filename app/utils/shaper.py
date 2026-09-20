@@ -78,7 +78,7 @@ class _Applied:
     filters: Tuple[Tuple[str, int, int], ...] = ()
 
 
-def _detect_interface() -> Optional[str]:
+def detect_interface() -> Optional[str]:
     """Interface of the IPv4 default route, read straight from procfs."""
     try:
         with open("/proc/net/route") as routes:
@@ -197,7 +197,7 @@ class Shaper:
             )
             return
 
-        interface = BLACKLIST_INTERFACE or self._interface or _detect_interface()
+        interface = BLACKLIST_INTERFACE or self._interface or detect_interface()
         if not interface:
             self._unavailable("no default-route interface to shape")
             return

@@ -12,7 +12,7 @@
 | `subscription.py` | выдача клиентских конфигов |
 | `notification.py` | event-webhooks **и** CRUD push-scheduler'ов |
 | `anomaly.py` | настройки детектора аномалий, его вебхуки, live-отчёт |
-| `blacklist.py` | чёрный список: лимиты канала на пользователя |
+| `blacklist.py` | лимиты канала: на отдельного пользователя и общий на каждый адрес |
 | `home.py` | корень / редиректы |
 
 Новый эндпоинт: роутер → pydantic в `app/models` → crud в `app/db/crud.py`.
@@ -28,3 +28,8 @@ Push management API подробно — корневой `USAGE-ADD-PUSH.md`, A
 В ответе, кроме полей таблицы, живое состояние ядра (`active_ips`,
 `shaped_bytes`, `dropped_packets`); мутации не ждут `tc`, а ставят задачу
 синхронизации. Контракт — `USAGE-BLACKLIST.md`.
+
+Общий лимит (каждому адресу по `global_mbps`) — там же:
+`GET`/`PUT /api/blacklist/settings`, плюс блок `status.global_limit` в
+`GET /api/blacklist` и `GET /api/blacklist/status`. `/settings` объявлен **до**
+`/{username}`, иначе путь съел бы маршрут пользователя.

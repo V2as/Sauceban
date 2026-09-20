@@ -199,3 +199,16 @@ BLACKLIST_MAX_MBPS = config("BLACKLIST_MAX_MBPS", cast=int, default=10000)
 BLACKLIST_STATS_TIMEOUT = config("BLACKLIST_STATS_TIMEOUT", cast=int, default=10)
 # Timeout (seconds) for one `tc` invocation.
 BLACKLIST_TC_TIMEOUT = config("BLACKLIST_TC_TIMEOUT", cast=int, default=10)
+
+
+# Panel-wide cap given to every address separately (the "global limit").
+# Whether it is on and how fast it is lives in the database, managed through
+# the API and the dashboard; these variables only tune the plumbing.
+# How long (in seconds) the kernel keeps the token bucket of an address after
+# its last packet. Only affects when memory is reclaimed, not the cap itself.
+GLOBAL_LIMIT_IP_TIMEOUT = config("GLOBAL_LIMIT_IP_TIMEOUT", cast=int, default=120)
+# Ceiling on addresses tracked per direction and address family. A full table
+# means new addresses run uncapped, never blocked.
+GLOBAL_LIMIT_MAX_IPS = config("GLOBAL_LIMIT_MAX_IPS", cast=int, default=65536)
+# Timeout (seconds) for one `nft` invocation.
+GLOBAL_LIMIT_NFT_TIMEOUT = config("GLOBAL_LIMIT_NFT_TIMEOUT", cast=int, default=10)

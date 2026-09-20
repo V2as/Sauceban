@@ -41,7 +41,7 @@
   "header.nodesUsage": "نمودار گره‌ها",
   "header.notificationSettings": "تنظیمات اعلان‌ها",
   "header.anomalySettings": "پایش ناهنجاری",
-  "header.blacklist": "لیست سیاه",
+  "header.blacklist": "محدودیت‌های پهنای باند",
   "notifications.title": "تنظیمات اعلان‌ها",
   "anomaly.title": "پایش ناهنجاری ترافیک",
   "hostsDialog.addHost": "افزودن هاست",
@@ -199,5 +199,5 @@
   "usersTable.noUserMatched": "به‌نظر میرسه کاربری که جستجو کردید، وجود ندارد",
   "usersTable.status": "وضعیت",
   "usersTable.total": "مجموع",
-  "blacklist.title": "محدودیت پهنای باند"
+  "blacklist.title": "محدودیت‌های پهنای باند"
 }

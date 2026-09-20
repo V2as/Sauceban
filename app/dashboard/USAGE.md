@@ -19,8 +19,14 @@ npm run build -- --outDir build --assetsDir statics    # → build/statics
 `/api/...` → при необходимости эндпоинт в `app/routers`. Push-scheduler UI
 ходит в `/api/notification` (см. `USAGE-ADD-PUSH.md`), мониторинг аномалий —
 в `/api/anomaly` (`AnomalyContext.tsx` + `AnomalySettingsModal.tsx`,
-см. `USAGE-ANOMALY.md`), чёрный список — в `/api/blacklist`
+см. `USAGE-ANOMALY.md`), лимиты канала — в `/api/blacklist`
 (`BlacklistContext.tsx` + `BlacklistModal.tsx`, см. `USAGE-BLACKLIST.md`).
+
+Пункт меню «Лимиты канала» (ключ `header.blacklist`) открывает одну модалку на
+оба механизма: сверху общий лимит на каждый адрес
+(`PUT /api/blacklist/settings`), ниже — список лимитов отдельным
+пользователям. Состояние общего лимита приходит внутри `GET /api/blacklist`
+(`status.global_limit`), отдельного запроса на опрос нет.
 
 Числовое поле формы (`Input` с `type="number"`) держит своё значение внутри
 Chakra `NumberInput`: с голым `form.register` поле продолжает показывать

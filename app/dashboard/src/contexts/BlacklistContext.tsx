@@ -25,6 +25,23 @@ export type BlacklistEntryType = z.infer<typeof BlacklistEntrySchema> & {
   updated_at?: string | null;
 };
 
+// the panel-wide cap: every client address gets `global_mbps` of its own, so
+// the number is not a budget shared between users
+export const GlobalLimitSchema = z.object({
+  global_enabled: z.boolean(),
+  global_mbps: z.coerce.number().int().min(1),
+});
+
+export type GlobalLimitType = z.infer<typeof GlobalLimitSchema> & {
+  available?: boolean;
+  unavailable_reason?: string | null;
+  interface?: string | null;
+  dropped_packets_down?: number;
+  dropped_packets_up?: number;
+  last_applied_at?: number | null;
+  last_error?: string | null;
+};
+
 export type BlacklistStatusType = {
   enforce: boolean;
   available: boolean;
@@ -37,6 +54,7 @@ export type BlacklistStatusType = {
   last_sync_at?: number | null;
   last_applied_at?: number | null;
   last_error?: string | null;
+  global_limit: GlobalLimitType;
 };
 
 export type BlacklistType = {
@@ -58,6 +76,7 @@ export type BlacklistStore = {
   fetchBlacklist: () => Promise<BlacklistType>;
   addEntry: (entry: BlacklistEntryType) => Promise<unknown>;
   updateEntry: (entry: BlacklistEntryType) => Promise<unknown>;
+  updateGlobalLimit: (limit: GlobalLimitType) => Promise<unknown>;
   deleteEntry: () => Promise<unknown>;
   deletingEntry?: BlacklistEntryType | null;
   setDeletingEntry: (entry: BlacklistEntryType | null) => void;
@@ -81,6 +100,15 @@ export const useBlacklist = create<BlacklistStore>((set, get) => ({
         limit_mbps: body.limit_mbps,
         is_enabled: body.is_enabled,
         reason: body.reason,
+      },
+    });
+  },
+  updateGlobalLimit(limit) {
+    return fetch("/blacklist/settings", {
+      method: "PUT",
+      body: {
+        global_enabled: limit.global_enabled,
+        global_mbps: limit.global_mbps,
       },
     });
   },

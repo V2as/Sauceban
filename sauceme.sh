@@ -1525,9 +1525,9 @@ update_command() {
 }
 
 ensure_net_admin_cap() {
-    # per-user bandwidth caps are enforced with tc on the host interface,
-    # which the container cannot touch without NET_ADMIN; compose files
-    # written before that feature existed do not grant it
+    # bandwidth caps are enforced with tc and nft on the host interface, which
+    # the container cannot touch without NET_ADMIN; compose files written
+    # before that feature existed do not grant it
     if [ ! -f "$COMPOSE_FILE" ]; then
         return
     fi

@@ -36,7 +36,7 @@
   "header.nodesUsage": "节点统计",
   "header.notificationSettings": "通知设置",
   "header.anomalySettings": "异常监控",
-  "header.blacklist": "黑名单",
+  "header.blacklist": "带宽限制",
   "notifications.title": "通知设置",
   "anomaly.title": "流量异常监控",
   "hostsDialog.addHost": "添加主机",
@@ -195,5 +195,5 @@
   "usersTable.status": "状态",
   "usersTable.sortByExpire": "按过期时间排序",
   "usersTable.total": "总共",
-  "blacklist.title": "带宽黑名单"
+  "blacklist.title": "带宽限制"
 }

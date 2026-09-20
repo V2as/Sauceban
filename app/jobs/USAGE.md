@@ -12,7 +12,7 @@ APScheduler (`BackgroundScheduler` в `app/__init__.py`), timezone UTC.
 | `send_notifications.py` | event-webhooks (`WEBHOOK_ADDRESS`) |
 | `send_push_metrics.py` | **Sauce:** периодический POST метрик по scheduler'ам из БД |
 | `detect_anomalies.py` | **Sauce:** семплер online-IP + отчёты об аномалиях на вебхуки |
-| `sync_blacklist.py` | **Sauce:** сверка лимитов канала из `blacklist_users` с правилами `tc` |
+| `sync_blacklist.py` | **Sauce:** сверка лимитов канала (`blacklist_users` → `tc`, `bandwidth_settings` → `nft`) |
 
 Push-джоба аддитивна: нет строк в `notification_schedulers` → ничего не
 бежит. Reconciler синхронизирует interval/enable без рестарта. Сборщик —
@@ -37,5 +37,12 @@ gRPC и `tc` не висели в HTTP-запросе. Пустой список
 тик стоит один SELECT. Здесь же снимаются истёкшие авто-замедления — то
 есть они истекают и при выключенном мониторинге аномалий. Контракт —
 `USAGE-BLACKLIST.md`.
+
+Тот же тик сверяет общий лимит (`bandwidth_settings` → `app/utils/global_limiter.py`):
+адреса для него не нужны — бакеты держит ядро, — поэтому это лишний SELECT и
+сравнение кортежа, а `nft` вызывается только когда настройка изменилась (плюс
+раз в минуту проверка, что правила не снёс чужой firewall). Настройки читаются
+в своём `try`: непромигрированная БД не должна ломать сверку лимитов на
+пользователей.
 
 Не предлагайте несколько uvicorn-workers: scheduler один на процесс.

@@ -6,7 +6,7 @@ Postgres). Схему меняем только миграциями.
 | Файл | Назначение |
 |---|---|
 | `base.py` | engine, Session, `GetDB` |
-| `models.py` | ORM-таблицы (users, admins, nodes, …, `notification_schedulers`, `anomaly_settings`, `anomaly_schedulers`, `blacklist_users`) |
+| `models.py` | ORM-таблицы (users, admins, nodes, …, `notification_schedulers`, `anomaly_settings`, `anomaly_schedulers`, `blacklist_users`, `bandwidth_settings`) |
 | `crud.py` | все запросы к БД (~1.5k строк) — правки логики выборки сюда |
 | `migrations/` | Alembic versions; конфиг — корневой `alembic.ini` |
 
@@ -37,3 +37,10 @@ alembic -c alembic.ini revision --autogenerate -m "..."
 `expire_anomaly_throttles` удаляет истёкшие. `get_active_blacklist` отдаёт
 `expires_at` вызывающему, а не фильтрует сама: так снятие истёкших стоит
 лишний запрос только когда есть что снимать.
+
+`bandwidth_settings` (миграция `e5f6a7b8c9d0`, идемпотентная) — строка-одиночка
+с общим лимитом канала: `global_enabled` и `global_mbps`.
+`get_bandwidth_settings()` создаёт её с дефолтами при первом обращении, как у
+`anomaly_settings`. В переменные окружения это не вынесено намеренно:
+переключатель живёт в дашборде, а значит должен переживать рестарт без
+редеплоя.

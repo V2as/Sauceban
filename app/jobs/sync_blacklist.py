@@ -13,7 +13,12 @@ nodes would need an agent running on the node itself).
 Caps written by the anomaly monitor carry an expiry; this job is what lifts
 them, so they run out even while monitoring is switched off.
 
-Cost of a tick with an empty blacklist is one indexed SELECT. With capped
+The same tick reconciles the panel-wide cap every address gets on its own
+(:mod:`app.utils.global_limiter`). That one needs no addresses at all — the
+kernel keeps a bucket per address — so all it costs here is reading the
+setting and comparing it with what is installed.
+
+Cost of a tick with an empty blacklist is two indexed SELECTs. With capped
 users it adds one gRPC call, plus one call per capped user that is online on
 cores too old for the bulk RPC. Rules are only rewritten when the set of
 (address, cap) pairs actually changed.
@@ -24,7 +29,8 @@ from time import time
 from typing import Dict, List, Optional, Tuple
 
 from app import logger, scheduler, xray
-from app.db import GetDB, crud
+from app.db import GetDB, Session, crud
+from app.utils.global_limiter import global_limiter
 from app.utils.shaper import UserShape, shaper
 from config import (BLACKLIST_ENFORCE, BLACKLIST_IP_TTL,
                     BLACKLIST_STATS_TIMEOUT, JOB_SYNC_BLACKLIST_INTERVAL)
@@ -138,8 +144,23 @@ def shaped_ips() -> Dict[int, List[str]]:
     }
 
 
+def _read_global_limit(db: Session) -> Optional[Tuple[bool, int]]:
+    """The panel-wide cap as (enabled, mbps), or None when it cannot be read.
+
+    Guarded on its own so a database that has not been migrated yet — no
+    `bandwidth_settings` table — still gets its per-user caps reconciled.
+    """
+    try:
+        settings = crud.get_bandwidth_settings(db)
+        return bool(settings.global_enabled), int(settings.global_mbps)
+    except Exception as err:
+        logger.debug(f"global limit: settings unavailable: {err}")
+        return None
+
+
 def run_sync() -> None:
     """One reconciliation pass: read the caps, find the IPs, apply the rules."""
+    global_limit = None
     try:
         with GetDB() as db:
             active = crud.get_active_blacklist(db)
@@ -158,6 +179,7 @@ def run_sync() -> None:
                     entry for entry in active
                     if entry[3] is None or entry[3] > now
                 ]
+            global_limit = _read_global_limit(db)
     except Exception as err:
         # table missing (migrations not run yet) or database hiccup
         logger.debug(f"blacklist sync skipped: {err}")
@@ -167,7 +189,15 @@ def run_sync() -> None:
 
     if not BLACKLIST_ENFORCE:
         _state["ip_source"] = "unavailable"
+        # the switch covers both mechanisms; the call also removes a table left
+        # behind by a previous process and then costs nothing
+        global_limiter.apply(False, 0)
         return
+
+    # the kernel holds the per-address buckets itself, so this is a no-op until
+    # the setting changes — no addresses are collected and no rules rewritten
+    if global_limit is not None:
+        global_limiter.apply(*global_limit)
 
     if not active:
         _ips.clear()

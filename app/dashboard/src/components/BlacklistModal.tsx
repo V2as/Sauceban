@@ -39,6 +39,8 @@ import {
   BlacklistStatusType,
   FetchBlacklistQueryKey,
   getBlacklistEntryDefaultValues,
+  GlobalLimitSchema,
+  GlobalLimitType,
   useBlacklist,
   useBlacklistQuery,
 } from "contexts/BlacklistContext";
@@ -114,6 +116,134 @@ const EnforcementAlert: FC<{ status?: BlacklistStatusType | null }> = ({
     );
   }
   return null;
+};
+
+const GlobalLimitForm: FC<{ limit: GlobalLimitType }> = ({ limit }) => {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { updateGlobalLimit } = useBlacklist();
+  const form = useForm<GlobalLimitType>({
+    defaultValues: limit,
+    resolver: zodResolver(GlobalLimitSchema),
+  });
+  const enabled = form.watch("global_enabled");
+
+  const { isLoading, mutate } = useMutation(updateGlobalLimit, {
+    onSuccess: () => {
+      generateSuccessMessage(t("blacklist.global.saved"), toast);
+      queryClient.invalidateQueries(FetchBlacklistQueryKey);
+    },
+    onError: (e) => {
+      generateErrorMessage(e, toast, form);
+    },
+  });
+
+  const dropped =
+    (limit.dropped_packets_down || 0) + (limit.dropped_packets_up || 0);
+
+  return (
+    <Box
+      border="1px solid"
+      _dark={{ borderColor: "gray.600" }}
+      _light={{ borderColor: "gray.200" }}
+      borderRadius="4px"
+      p={3}
+      mb={3}
+      w="full"
+    >
+      <form onSubmit={form.handleSubmit((v) => mutate(v))}>
+        <VStack rowGap={3} alignItems="flex-start">
+          <HStack w="full" justifyContent="space-between">
+            <Text fontWeight="medium" fontSize="sm">
+              {t("blacklist.global.title")}
+            </Text>
+            {limit.global_enabled && (
+              <Badge
+                colorScheme={limit.available ? "green" : "red"}
+                rounded="full"
+                px={3}
+                py={1}
+              >
+                <Text fontSize="0.7rem" fontWeight="medium">
+                  {limit.global_mbps} {t("blacklist.mbps")}
+                </Text>
+              </Badge>
+            )}
+          </HStack>
+          <Text fontSize="xs" opacity={0.8}>
+            {t("blacklist.global.hint")}
+          </Text>
+          {limit.global_enabled && limit.available === false && (
+            <Alert status="warning" rounded="md" fontSize="sm">
+              <AlertIcon />
+              <Box>
+                <Text fontWeight="medium">
+                  {t("blacklist.global.unavailable")}
+                </Text>
+                <Text opacity={0.9}>{limit.unavailable_reason}</Text>
+              </Box>
+            </Alert>
+          )}
+          <Controller
+            name="global_enabled"
+            control={form.control}
+            render={({ field }) => (
+              <FormControl display="flex" alignItems="center">
+                <Switch
+                  colorScheme="primary"
+                  isChecked={!!field.value}
+                  onChange={(e) => field.onChange(e.target.checked)}
+                />
+                <FormLabel mb="0" ml="2" fontSize="sm">
+                  {t("blacklist.global.enabled")}
+                </FormLabel>
+              </FormControl>
+            )}
+          />
+          <Controller
+            name="global_mbps"
+            control={form.control}
+            render={({ field }) => (
+              <FormControl>
+                <FormLabel>{t("blacklist.global.limit")}</FormLabel>
+                <CustomInput
+                  size="sm"
+                  type="number"
+                  placeholder="200"
+                  disabled={!enabled}
+                  endAdornment={t("blacklist.global.mbpsPerIp")}
+                  name={field.name}
+                  value={String(field.value ?? "")}
+                  // the stepper reports a string, the inner field a DOM event
+                  onChange={(v: any) =>
+                    field.onChange(typeof v === "string" ? v : v?.target?.value)
+                  }
+                  onBlur={field.onBlur}
+                  error={form.formState?.errors?.global_mbps?.message}
+                />
+              </FormControl>
+            )}
+          />
+          <HStack w="full" justifyContent="space-between">
+            <Text fontSize="xs" color="gray.500" _dark={{ color: "gray.400" }}>
+              {limit.global_enabled && limit.available
+                ? t("blacklist.global.dropped", { count: dropped })
+                : ""}
+            </Text>
+            <Button
+              type="submit"
+              size="sm"
+              colorScheme="primary"
+              isLoading={isLoading}
+            >
+              {t("blacklist.global.save")}
+            </Button>
+          </HStack>
+        </VStack>
+      </form>
+    </Box>
+  );
 };
 
 type EntryFormType = FC<{
@@ -490,25 +620,33 @@ export const BlacklistDialog: FC = () => {
               <Spinner />
             </HStack>
           ) : (
-            <Accordion w="full" allowToggle index={openIndexes}>
-              <VStack w="full" rowGap={3}>
-                {entries.map((entry) => (
-                  <EntryAccordion
-                    key={entry.id}
-                    entry={entry}
-                    toggleAccordion={() => toggleAccordion(String(entry.id))}
+            <>
+              {blacklist?.status?.global_limit && (
+                <GlobalLimitForm limit={blacklist.status.global_limit} />
+              )}
+              <Text mb={2} fontWeight="medium" fontSize="sm">
+                {t("blacklist.perUserTitle")}
+              </Text>
+              <Accordion w="full" allowToggle index={openIndexes}>
+                <VStack w="full" rowGap={3}>
+                  {entries.map((entry) => (
+                    <EntryAccordion
+                      key={entry.id}
+                      entry={entry}
+                      toggleAccordion={() => toggleAccordion(String(entry.id))}
+                    />
+                  ))}
+                  <AddEntryForm
+                    key={addFormKey}
+                    toggleAccordion={() => toggleAccordion("add")}
+                    onAdded={() => {
+                      setOpenAccordions({});
+                      setAddFormKey((key) => key + 1);
+                    }}
                   />
-                ))}
-                <AddEntryForm
-                  key={addFormKey}
-                  toggleAccordion={() => toggleAccordion("add")}
-                  onAdded={() => {
-                    setOpenAccordions({});
-                    setAddFormKey((key) => key + 1);
-                  }}
-                />
-              </VStack>
-            </Accordion>
+                </VStack>
+              </Accordion>
+            </>
           )}
         </ModalBody>
       </ModalContent>

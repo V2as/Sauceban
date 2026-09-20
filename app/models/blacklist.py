@@ -53,6 +53,38 @@ class BlacklistEntryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GlobalLimitModify(BaseModel):
+    """Partial update of the panel-wide cap. Field names match the columns."""
+
+    global_enabled: Optional[bool] = None
+    global_mbps: Optional[int] = Field(default=None, ge=1, le=BLACKLIST_MAX_MBPS)
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {"global_enabled": True, "global_mbps": 200}
+        }
+    )
+
+
+class GlobalLimitStatus(BaseModel):
+    """The panel-wide cap: what is configured and whether it is installed.
+
+    The cap is enforced per address, so the number here is what a single client
+    address gets in each direction — not a budget shared by everyone.
+    """
+
+    global_enabled: bool = False
+    global_mbps: int = 200
+    available: bool = True
+    unavailable_reason: Optional[str] = None
+    interface: Optional[str] = None
+    # kernel counters of what the cap dropped since it was installed
+    dropped_packets_down: int = 0
+    dropped_packets_up: int = 0
+    last_applied_at: Optional[float] = None
+    last_error: Optional[str] = None
+
+
 class BlacklistStatus(BaseModel):
     """Whether the caps are actually being enforced, and by what."""
 
@@ -69,6 +101,8 @@ class BlacklistStatus(BaseModel):
     last_sync_at: Optional[float] = None
     last_applied_at: Optional[float] = None
     last_error: Optional[str] = None
+    # the panel-wide cap, enforced independently of the entries above
+    global_limit: GlobalLimitStatus = Field(default_factory=GlobalLimitStatus)
 
 
 class BlacklistResponse(BaseModel):
