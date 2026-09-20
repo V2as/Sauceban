@@ -969,6 +969,7 @@ EOF
 }
 
 up_marzban() {
+    ensure_net_admin_cap
     $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" up -d --remove-orphans
 }
 
@@ -1515,7 +1516,6 @@ update_command() {
     update_marzban_script
     colorized_echo blue "Updating Marzban..."
     update_marzban
-    ensure_net_admin_cap
 
     colorized_echo blue "Restarting Marzban's services"
     down_marzban
@@ -1527,8 +1527,11 @@ update_command() {
 ensure_net_admin_cap() {
     # bandwidth caps are enforced with tc and nft on the host interface, which
     # the container cannot touch without NET_ADMIN; compose files written
-    # before that feature existed do not grant it
-    if [ ! -f "$COMPOSE_FILE" ]; then
+    # before that feature existed do not grant it. Checked on every start, not
+    # only on update: `update` replaces this script before running the rest of
+    # itself, so an installation updating from an older script would otherwise
+    # have to be updated twice to get the capability.
+    if [ ! -f "$COMPOSE_FILE" ] || ! command -v yq >/dev/null 2>&1; then
         return
     fi
     if yq '.services.marzban.cap_add // [] | contains(["NET_ADMIN"])' "$COMPOSE_FILE" 2>/dev/null | grep -q true; then

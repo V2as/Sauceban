@@ -309,6 +309,65 @@ def get_users(db: Session,
     return query.all()
 
 
+def get_users_to_review(db: Session,
+                        now_ts: float,
+                        usage_percent: Optional[int] = None,
+                        days_left: Optional[int] = None) -> List[User]:
+    """Active users the review job has anything to do with.
+
+    The job only acts on a user that ran out of traffic or time and, when
+    reminders are enabled, on one that is close to either — for everybody else
+    it walks away after two comparisons. Making the database pick those users
+    is what keeps the tick affordable on a panel with tens of thousands of
+    accounts: loading them all every few seconds is minutes of query time and
+    a memory spike per tick.
+
+    Args:
+        now_ts: current UTC timestamp, the same one the job compares against.
+        usage_percent: lowest "traffic used" reminder threshold, or None when
+            reminders are off.
+        days_left: largest "days until expiry" reminder threshold, or None.
+    """
+    has_limit = and_(User.data_limit.isnot(None), User.data_limit > 0)
+    conditions = [
+        and_(has_limit, User.used_traffic >= User.data_limit),
+        and_(User.expire.isnot(None), User.expire <= now_ts),
+    ]
+
+    if usage_percent is not None:
+        conditions.append(
+            and_(has_limit, User.used_traffic >= User.data_limit * usage_percent / 100)
+        )
+    if days_left is not None:
+        # calculate_expiration_days() floors the remaining time, so the window
+        # is widened by a day to keep its last day inside the filter
+        conditions.append(and_(
+            User.expire.isnot(None),
+            User.expire <= now_ts + (days_left + 1) * 86400,
+        ))
+
+    return (
+        get_user_queryset(db)
+        .filter(User.status == UserStatus.active)
+        .filter(or_(*conditions))
+        .all()
+    )
+
+
+def get_on_hold_users_to_review(db: Session, now: datetime) -> List[User]:
+    """On-hold users whose hold is over: they connected, or the wait ran out."""
+    return (
+        get_user_queryset(db)
+        .filter(User.status == UserStatus.on_hold)
+        .filter(or_(
+            and_(User.online_at.isnot(None),
+                 User.online_at >= coalesce(User.edit_at, User.created_at)),
+            and_(User.on_hold_timeout.isnot(None), User.on_hold_timeout <= now),
+        ))
+        .all()
+    )
+
+
 def get_user_usages(db: Session, dbuser: User, start: datetime, end: datetime) -> List[UserUsageResponse]:
     """
     Retrieves user usages within a specified date range.

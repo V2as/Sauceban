@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING
 from sqlalchemy.orm import Session
 
 from app import logger, scheduler, xray
-from app.db import (GetDB, get_notification_reminder, get_users,
+from app.db import (GetDB, get_notification_reminder,
+                    get_on_hold_users_to_review, get_users_to_review,
                     start_user_expire, update_user_status, reset_user_by_next)
 from app.models.user import ReminderType, UserResponse, UserStatus
 from app.utils import report
@@ -54,8 +55,13 @@ def reset_user_by_next_report(db: Session, user: "User"):
 def review():
     now = datetime.utcnow()
     now_ts = now.timestamp()
+    # the database is asked for the users this tick can do something about;
+    # reminders widen that set to the accounts approaching a threshold
+    usage_percent = min(NOTIFY_REACHED_USAGE_PERCENT, default=None) if WEBHOOK_ADDRESS else None
+    days_left = max(NOTIFY_DAYS_LEFT, default=None) if WEBHOOK_ADDRESS else None
+
     with GetDB() as db:
-        for user in get_users(db, status=UserStatus.active):
+        for user in get_users_to_review(db, now_ts, usage_percent, days_left):
 
             limited = user.data_limit and user.used_traffic >= user.data_limit
             expired = user.expire and user.expire <= now_ts
@@ -88,7 +94,7 @@ def review():
 
             logger.info(f"User \"{user.username}\" status changed to {status}")
 
-        for user in get_users(db, status=UserStatus.on_hold):
+        for user in get_on_hold_users_to_review(db, now):
 
             if user.edit_at:
                 base_time = datetime.timestamp(user.edit_at)
