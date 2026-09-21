@@ -200,9 +200,13 @@ What is worth knowing before switching it on:
         - NET_ADMIN
   ```
 
-  `marzban update` (`sauceme.sh`) adds the capability to an existing
-  `docker-compose.yml` if it is missing. Without it the entries are kept, the
-  API keeps answering, and `status.unavailable_reason` says what to fix.
+  Every `marzban up` / `restart` (`sauceme.sh`) adds the capability to an
+  existing `docker-compose.yml` if it is missing, and `marzban fix-limiter`
+  does it on demand — use that one when the page reports the capability is
+  missing, because it also recreates the panel container (and only it, the
+  database keeps running), which is what a compose file edited on its own does
+  not do. Without the capability the entries are kept, the API keeps
+  answering, and `status.unavailable_reason` says what to fix.
 
 - `iproute2` (the `tc` utility) and `nftables` (the `nft` utility) — both are
   already in the image. `nft` is only needed for the limit for everyone, `tc`

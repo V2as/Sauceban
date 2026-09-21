@@ -1524,6 +1524,35 @@ update_command() {
     colorized_echo green "Marzban updated successfully"
 }
 
+net_admin_in_compose() {
+    [ -f "$COMPOSE_FILE" ] || return 1
+    if command -v yq >/dev/null 2>&1; then
+        yq '.services.marzban.cap_add // [] | contains(["NET_ADMIN"])' "$COMPOSE_FILE" 2>/dev/null | grep -q true
+        return
+    fi
+    grep -q 'NET_ADMIN' "$COMPOSE_FILE"
+}
+
+grant_net_admin_cap() {
+    yq -i '.services.marzban.cap_add = ((.services.marzban.cap_add // []) + ["NET_ADMIN"] | unique)' "$COMPOSE_FILE"
+}
+
+container_net_admin() {
+    # yes / no / unknown — what the running panel container actually has
+    local container caps
+    container=$($COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" ps -q marzban 2>/dev/null | head -1)
+    if [ -z "$container" ]; then
+        echo "unknown"
+        return
+    fi
+    caps=$(docker inspect -f '{{.HostConfig.CapAdd}}' "$container" 2>/dev/null)
+    if [[ "$caps" == *NET_ADMIN* ]]; then
+        echo "yes"
+    else
+        echo "no"
+    fi
+}
+
 ensure_net_admin_cap() {
     # bandwidth caps are enforced with tc and nft on the host interface, which
     # the container cannot touch without NET_ADMIN; compose files written
@@ -1531,14 +1560,15 @@ ensure_net_admin_cap() {
     # only on update: `update` replaces this script before running the rest of
     # itself, so an installation updating from an older script would otherwise
     # have to be updated twice to get the capability.
-    if [ ! -f "$COMPOSE_FILE" ] || ! command -v yq >/dev/null 2>&1; then
+    if [ ! -f "$COMPOSE_FILE" ] || net_admin_in_compose; then
         return
     fi
-    if yq '.services.marzban.cap_add // [] | contains(["NET_ADMIN"])' "$COMPOSE_FILE" 2>/dev/null | grep -q true; then
+    if ! command -v yq >/dev/null 2>&1; then
+        colorized_echo yellow "Bandwidth limits need NET_ADMIN in docker-compose.yml — run 'marzban fix-limiter'"
         return
     fi
     colorized_echo blue "Granting NET_ADMIN to the marzban service (bandwidth limits)"
-    yq -i '.services.marzban.cap_add = ((.services.marzban.cap_add // []) + ["NET_ADMIN"] | unique)' "$COMPOSE_FILE"
+    grant_net_admin_cap
 }
 
 update_marzban_script() {
@@ -1928,6 +1958,7 @@ usage() {
     colorized_echo yellow "  update-html     $(tput sgr0)– Update custom HTML templates (home & subscription)"
     colorized_echo yellow "  fix-acme        $(tput sgr0)– Fix acme.sh volume in docker-compose (mount entire directory)"
     colorized_echo yellow "  fix-xray-json   $(tput sgr0)– Fix trailing extra braces in xray_config.json and restart"
+    colorized_echo yellow "  fix-limiter     $(tput sgr0)– Grant NET_ADMIN so bandwidth limits reach the kernel"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -2997,6 +3028,109 @@ fix_acme_command() {
     colorized_echo green "Marzban restarted with correct acme.sh volume."
 }
 
+# Prepare docker-compose.yml for the bandwidth limits page ("Лимиты канала"),
+# which needs NET_ADMIN to install tc/nft rules. `up` adds the capability by
+# itself, but only from the script version that knows about it — a panel whose
+# /usr/local/bin/marzban is older never runs that check, so the page keeps
+# reporting "nft is not allowed to change the ruleset" after an update.
+fix_limiter_command() {
+    check_running_as_root
+
+    local no_restart=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-restart)
+                no_restart=true
+                shift
+            ;;
+            -h|--help)
+                colorized_echo cyan "Usage: marzban fix-limiter [options]"
+                echo ""
+                echo "Grants the panel container the NET_ADMIN capability. Without it the"
+                echo "bandwidth limits page reports 'nft is not allowed to change the"
+                echo "ruleset' and no limit ever reaches the kernel."
+                echo ""
+                echo "OPTIONS:"
+                echo "  --no-restart   Only edit docker-compose.yml, do not recreate the container"
+                echo "  -h, --help     Show this help message"
+                echo ""
+                echo "EXAMPLES:"
+                echo "  marzban fix-limiter"
+                echo "  marzban fix-limiter --no-restart"
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                exit 1
+            ;;
+        esac
+    done
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban is not installed!"
+        exit 1
+    fi
+
+    if [ ! -f "$COMPOSE_FILE" ]; then
+        colorized_echo red "docker-compose.yml not found at $COMPOSE_FILE"
+        exit 1
+    fi
+
+    if ! command -v yq >/dev/null 2>&1; then
+        install_yq
+    fi
+
+    if net_admin_in_compose; then
+        colorized_echo green "NET_ADMIN is already granted in $COMPOSE_FILE"
+    else
+        colorized_echo blue "Adding cap_add: [NET_ADMIN] to the marzban service..."
+        grant_net_admin_cap
+        colorized_echo green "docker-compose.yml updated"
+    fi
+
+    # limits are installed on the host interface; a bridged container would get
+    # the capability and still shape nothing a client sees
+    local net_mode
+    net_mode=$(yq '.services.marzban.network_mode // ""' "$COMPOSE_FILE" 2>/dev/null)
+    if [ "$net_mode" != "host" ]; then
+        colorized_echo yellow "Warning: marzban is not on network_mode: host — limits will not reach client traffic"
+    fi
+
+    if [ "$no_restart" = true ]; then
+        colorized_echo yellow "Skipped restart (--no-restart). The capability applies once the container is recreated."
+        return 0
+    fi
+
+    detect_compose
+
+    # the line in the file means nothing until the running container carries
+    # it: a panel can have had the capability written by an earlier `up` and
+    # still run a container created before that, which is why the check is on
+    # the container and the recreation is forced
+    if [ "$(container_net_admin)" = "yes" ]; then
+        colorized_echo green "Container already runs with NET_ADMIN — nothing to recreate"
+        return 0
+    fi
+
+    # only the panel container is recreated; the database keeps running
+    colorized_echo blue "Recreating the panel container to apply the capability..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" up -d --force-recreate --no-deps marzban
+
+    case "$(container_net_admin)" in
+        yes)
+            colorized_echo green "Container runs with NET_ADMIN — bandwidth limits can reach the kernel now"
+        ;;
+        unknown)
+            colorized_echo yellow "Could not find the marzban container to verify the capability."
+        ;;
+        *)
+            colorized_echo red "The container still has no NET_ADMIN"
+            colorized_echo yellow "Check $COMPOSE_FILE by hand and recreate the container"
+            exit 1
+        ;;
+    esac
+}
+
 # Truncate xray_config.json after the first valid top-level JSON value if the file has
 # trailing junk (e.g. duplicate `}` → json "Extra data" / jq "Unmatched '}'").
 fix_xray_json_extra_braces_command() {
@@ -3149,6 +3283,8 @@ case "$1" in
         shift; fix_acme_command "$@";;
     fix-xray-json)
         shift; fix_xray_json_extra_braces_command "$@";;
+    fix-limiter)
+        shift; fix_limiter_command "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)

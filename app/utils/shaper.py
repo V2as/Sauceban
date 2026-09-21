@@ -53,8 +53,9 @@ _PRIO_V6 = 2
 _RETRY_UNSUPPORTED = 300
 
 _PERMISSION_HINT = (
-    "the container needs NET_ADMIN (add `cap_add: [NET_ADMIN]` to the marzban "
-    "service in docker-compose.yml and recreate it)"
+    "the container needs NET_ADMIN (run `marzban fix-limiter`, or add "
+    "`cap_add: [NET_ADMIN]` to the marzban service in docker-compose.yml "
+    "and recreate it)"
 )
 
 
