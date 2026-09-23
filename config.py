@@ -1,3 +1,5 @@
+import os
+
 from decouple import config
 from dotenv import load_dotenv
 
@@ -31,6 +33,14 @@ XRAY_FALLBACKS_INBOUND_TAG = config("XRAY_FALLBACKS_INBOUND_TAG", cast=str, defa
 )
 XRAY_EXECUTABLE_PATH = config("XRAY_EXECUTABLE_PATH", default="/usr/local/bin/xray")
 XRAY_ASSETS_PATH = config("XRAY_ASSETS_PATH", default="/usr/local/share/xray")
+# Soft memory limit (GOMEMLIMIT) handed to the Xray process, kept in a file
+# next to the core config instead of the environment: `marzban gomemlimit`
+# changes it without recreating the panel container, and the core health check
+# restarts the core when the file stops matching the running process.
+XRAY_GO_ENV_FILE = config(
+    "XRAY_GO_ENV_FILE",
+    default=os.path.join(os.path.dirname(os.path.abspath(XRAY_JSON)), "xray_go_env"),
+)
 XRAY_EXCLUDE_INBOUND_TAGS = config("XRAY_EXCLUDE_INBOUND_TAGS", default='').split()
 XRAY_SUBSCRIPTION_URL_PREFIX = config("XRAY_SUBSCRIPTION_URL_PREFIX", default="").strip("/")
 XRAY_SUBSCRIPTION_PATH = config("XRAY_SUBSCRIPTION_PATH", default="sub").strip("/")

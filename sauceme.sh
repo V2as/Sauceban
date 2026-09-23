@@ -1951,6 +1951,7 @@ usage() {
     colorized_echo yellow "  backup          $(tput sgr0)– Manual backup launch"
     colorized_echo yellow "  backup-service  $(tput sgr0)– Marzban Backupservice to backup to TG, and a new job in crontab"
     colorized_echo yellow "  core-update     $(tput sgr0)– Update/Change Xray core"
+    colorized_echo yellow "  gomemlimit      $(tput sgr0)– Set or remove the Go memory limit (GOMEMLIMIT) of the Xray core"
     colorized_echo yellow "  migrate         $(tput sgr0)– Switch Marzban source (image or build)"
     colorized_echo yellow "  tblocker        $(tput sgr0)– Install Xray Torrent Blocker for Marzban"
     colorized_echo yellow "  tblocker-config $(tput sgr0)– Manage tblocker configuration"
@@ -3242,6 +3243,466 @@ PY
     colorized_echo green "Marzban restarted."
 }
 
+# Xray is a Go program the panel starts as a child process, so the only place a
+# heap cap can come from is the environment of that process. The value is kept
+# in a file under the data directory: the panel reads it every time it starts
+# the core and its health check restarts the core when the file and the running
+# process disagree. That is what makes this command restart Xray only, instead
+# of recreating the container the way an .env variable would.
+
+# 64MiB — below that the Go collector burns CPU instead of releasing memory
+GOMEMLIMIT_MIN_BYTES=67108864
+
+gomemlimit_container() {
+    $COMPOSE -f "$COMPOSE_FILE" -p "$APP_NAME" ps -q marzban 2>/dev/null | head -1
+}
+
+# XRAY_GO_ENV_FILE / JOB_CORE_HEALTH_CHECK_INTERVAL / XRAY_EXECUTABLE_PATH as the
+# *running* panel resolves them; empty output means this panel predates the feature
+gomemlimit_panel_settings() {
+    docker exec "$1" python3 -c 'from config import JOB_CORE_HEALTH_CHECK_INTERVAL, XRAY_EXECUTABLE_PATH, XRAY_GO_ENV_FILE
+print(XRAY_GO_ENV_FILE)
+print(JOB_CORE_HEALTH_CHECK_INTERVAL)
+print(XRAY_EXECUTABLE_PATH)' 2>/dev/null
+}
+
+# "<canonical value> <bytes>" for an operator-friendly size, nothing when the
+# size makes no sense; suffixes are binary, 1G is 1GiB
+gomemlimit_normalize() {
+    docker exec "$1" python3 -c 'import re
+import sys
+
+units = {"": 1, "b": 1,
+         "k": 1024, "kb": 1024, "kib": 1024,
+         "m": 1024 ** 2, "mb": 1024 ** 2, "mib": 1024 ** 2,
+         "g": 1024 ** 3, "gb": 1024 ** 3, "gib": 1024 ** 3,
+         "t": 1024 ** 4, "tb": 1024 ** 4, "tib": 1024 ** 4}
+
+match = re.match(r"^([0-9]+)([A-Za-z]*)$", sys.argv[1].strip().replace(" ", ""))
+if not match or match.group(2).lower() not in units:
+    sys.exit(1)
+
+total = int(match.group(1)) * units[match.group(2).lower()]
+if total <= 0:
+    sys.exit(1)
+
+for suffix, size in (("TiB", 1024 ** 4), ("GiB", 1024 ** 3), ("MiB", 1024 ** 2), ("KiB", 1024)):
+    if total % size == 0:
+        print("%d%s %d" % (total // size, suffix, total))
+        break
+else:
+    print("%dB %d" % (total, total))' "$2" 2>/dev/null
+}
+
+# one line per Xray process: "<pid> <GOMEMLIMIT or -> <rss in KiB>". The
+# environment of the live process is the only proof the limit was applied
+gomemlimit_probe() {
+    docker exec "$1" python3 -c 'import os
+import sys
+
+wanted = os.path.basename(sys.argv[1])
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    try:
+        with open("/proc/" + name + "/cmdline", "rb") as handle:
+            argv = handle.read().split(b"\0")
+    except OSError:
+        continue
+    if not argv or not argv[0]:
+        continue
+    if os.path.basename(argv[0].decode("utf-8", "replace")) not in (wanted, "xray"):
+        continue
+    limit = "-"
+    try:
+        with open("/proc/" + name + "/environ", "rb") as handle:
+            for item in handle.read().split(b"\0"):
+                key, separator, value = item.partition(b"=")
+                if separator and key == b"GOMEMLIMIT" and value:
+                    limit = value.decode("utf-8", "replace")
+    except OSError:
+        continue
+    rss = "0"
+    try:
+        with open("/proc/" + name + "/status", "r") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    rss = line.split()[1]
+    except OSError:
+        pass
+    print(name + " " + limit + " " + rss)' "$2" 2>/dev/null
+}
+
+# what the process environment should look like for a configured value: the
+# panel ignores sizes the Go runtime would refuse, so only canonical ones show up
+gomemlimit_expected() {
+    if [[ "$1" =~ ^[1-9][0-9]*(B|KiB|MiB|GiB|TiB)?$ ]]; then
+        echo "$1"
+    else
+        echo "-"
+    fi
+}
+
+# pids of the Xray processes already running with the expected limit; fails
+# while any of them still runs with a different one (or none is running yet)
+gomemlimit_matching_pids() {
+    local container="$1" xray_path="$2" expected="$3"
+    local rows matched="" pid limit rss
+
+    rows=$(gomemlimit_probe "$container" "$xray_path")
+    [ -n "$rows" ] || return 1
+
+    while read -r pid limit rss; do
+        [ -n "$pid" ] || continue
+        [ "$limit" = "$expected" ] || return 1
+        matched="$matched $pid"
+    done <<< "$rows"
+
+    echo "${matched# }"
+}
+
+gomemlimit_wait() {
+    local container="$1" xray_path="$2" expected="$3" timeout="$4"
+    local deadline=$(( SECONDS + timeout ))
+    local pids="" dots=false
+
+    while :; do
+        if pids=$(gomemlimit_matching_pids "$container" "$xray_path" "$expected"); then
+            if [ "$dots" = true ]; then printf "\n" >&2; fi
+            echo "$pids"
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            if [ "$dots" = true ]; then printf "\n" >&2; fi
+            return 1
+        fi
+        printf "." >&2
+        dots=true
+        sleep 2
+    done
+}
+
+gomemlimit_write() {
+    local path="$1" value="$2"
+
+    mkdir -p "$(dirname "$path")" || return 1
+    {
+        echo "# Managed by 'marzban gomemlimit'. Soft memory limit of the Xray core;"
+        echo "# the panel restarts Xray (not itself) within seconds of a change here."
+        echo "GOMEMLIMIT=$value"
+    } > "$path.tmp" || return 1
+    mv -f "$path.tmp" "$path"
+}
+
+# state the rollback needs, filled in by gomemlimit_command
+GOMEMLIMIT_ENV_FILE=""
+GOMEMLIMIT_BACKUP=""
+GOMEMLIMIT_HAD_FILE=false
+GOMEMLIMIT_CONTAINER=""
+GOMEMLIMIT_XRAY_PATH=""
+GOMEMLIMIT_PREVIOUS=""
+GOMEMLIMIT_TIMEOUT=60
+
+gomemlimit_restore() {
+    if [ "$GOMEMLIMIT_HAD_FILE" = true ]; then
+        cp "$GOMEMLIMIT_BACKUP" "$GOMEMLIMIT_ENV_FILE"
+    else
+        rm -f "$GOMEMLIMIT_ENV_FILE"
+    fi
+    rm -f "$GOMEMLIMIT_BACKUP"
+    colorized_echo yellow "Rolled back to the previous setting (${GOMEMLIMIT_PREVIOUS:-no limit})."
+}
+
+# nothing has reached the core yet, so putting the file back is the whole rollback
+gomemlimit_abort() {
+    colorized_echo red "$1"
+    gomemlimit_restore
+    exit 1
+}
+
+# here the core may already have been restarted with the rejected value: a limit
+# that did not reach it is a failed command, a core that stays down is an outage
+gomemlimit_fail() {
+    colorized_echo red "$1"
+    gomemlimit_restore
+
+    local previous_expected
+    previous_expected=$(gomemlimit_expected "$GOMEMLIMIT_PREVIOUS")
+    if gomemlimit_wait "$GOMEMLIMIT_CONTAINER" "$GOMEMLIMIT_XRAY_PATH" \
+        "$previous_expected" "$GOMEMLIMIT_TIMEOUT" >/dev/null; then
+        colorized_echo green "Xray is running again with the previous setting."
+    else
+        colorized_echo red "Xray has not come back — check 'marzban logs', then 'marzban restart'."
+    fi
+
+    exit 1
+}
+
+gomemlimit_usage() {
+    colorized_echo cyan "Usage: marzban gomemlimit [show | set <size> | off] [options]"
+    echo ""
+    echo "Caps the memory the Go runtime of the Xray core may use (GOMEMLIMIT)."
+    echo "Only Xray is restarted, the panel and the database keep running."
+    echo ""
+    echo "SUBCOMMANDS:"
+    echo "  show           Configured and running limit (default)"
+    echo "  set <size>     Set the limit: 512M, 1G, 800MiB, 1073741824"
+    echo "  off            Remove the limit"
+    echo ""
+    echo "OPTIONS:"
+    echo "  --force        Allow a limit below 64MiB"
+    echo "  -h, --help     Show this help message"
+    echo ""
+    echo "Suffixes are binary: 1G = 1GiB = 1073741824 bytes. The cap is soft —"
+    echo "Go collects harder near it and exceeds it only when the live heap does"
+    echo "not fit. Remote nodes run their own Xray and are not affected."
+    echo ""
+    echo "EXAMPLES:"
+    echo "  marzban gomemlimit"
+    echo "  marzban gomemlimit set 1G"
+    echo "  marzban gomemlimit off"
+}
+
+gomemlimit_command() {
+    check_running_as_root
+
+    local action="show" requested="" force=false
+
+    if [ $# -gt 0 ]; then
+        case "$1" in
+            show|status)
+                shift
+            ;;
+            set)
+                action="set"
+                shift
+                requested="${1:-}"
+                if [ -z "$requested" ]; then
+                    colorized_echo red "No size given. Example: marzban gomemlimit set 1G"
+                    exit 1
+                fi
+                shift
+            ;;
+            off|unset|remove)
+                action="off"
+                shift
+            ;;
+            -h|--help)
+                gomemlimit_usage
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown argument: $1"
+                gomemlimit_usage
+                exit 1
+            ;;
+        esac
+    fi
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --force)
+                force=true
+                shift
+            ;;
+            -h|--help)
+                gomemlimit_usage
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                exit 1
+            ;;
+        esac
+    done
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban is not installed!"
+        exit 1
+    fi
+
+    if [ ! -f "$COMPOSE_FILE" ]; then
+        colorized_echo red "docker-compose.yml not found at $COMPOSE_FILE"
+        exit 1
+    fi
+
+    detect_compose
+
+    local container
+    container=$(gomemlimit_container)
+    if [ -z "$container" ]; then
+        colorized_echo red "The marzban container is not running — start it with 'marzban up' first."
+        exit 1
+    fi
+
+    local settings env_file health_interval xray_path
+    settings=$(gomemlimit_panel_settings "$container" || true)
+    env_file=$(awk 'NR==1' <<< "$settings")
+    health_interval=$(awk 'NR==2' <<< "$settings")
+    xray_path=$(awk 'NR==3' <<< "$settings")
+
+    if [ -z "$env_file" ]; then
+        colorized_echo red "The running panel does not know about GOMEMLIMIT (no XRAY_GO_ENV_FILE in its config)."
+        colorized_echo yellow "Update the panel first: marzban update"
+        exit 1
+    fi
+    if ! [[ "$health_interval" =~ ^[0-9]+$ ]]; then
+        health_interval=10
+    fi
+    if [ -z "$xray_path" ]; then
+        xray_path="/usr/local/bin/xray"
+    fi
+
+    # the panel reads the file from inside the container; only the data
+    # directory is shared with the host, so anything else cannot be written here
+    case "$env_file" in
+        "$DATA_DIR"/*) ;;
+        *)
+            colorized_echo red "The panel reads the limit from $env_file, which is outside $DATA_DIR."
+            colorized_echo yellow "That path is not shared with the host — point XRAY_GO_ENV_FILE inside $DATA_DIR."
+            exit 1
+        ;;
+    esac
+
+    local configured=""
+    if [ -f "$env_file" ]; then
+        configured=$(awk -F= '$1 ~ /^[[:space:]]*GOMEMLIMIT[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); value=$2} END {print value}' "$env_file")
+    fi
+
+    if [ "$action" = "show" ]; then
+        local rows pid limit rss
+        rows=$(gomemlimit_probe "$container" "$xray_path" || true)
+
+        colorized_echo cyan "Xray memory limit (GOMEMLIMIT)"
+        echo "  configured: ${configured:-not set}  ($env_file)"
+        if [ -z "$rows" ]; then
+            colorized_echo yellow "  running:    no Xray process inside the container"
+        else
+            while read -r pid limit rss; do
+                [ -n "$pid" ] || continue
+                if [ "$limit" = "-" ]; then
+                    limit="not set"
+                fi
+                echo "  running:    pid $pid, limit $limit, RSS $(( rss / 1024 )) MiB"
+            done <<< "$rows"
+
+            if ! gomemlimit_matching_pids "$container" "$xray_path" \
+                "$(gomemlimit_expected "$configured")" >/dev/null; then
+                colorized_echo yellow "  The core does not match the file yet; the panel applies it within ${health_interval}s."
+            fi
+        fi
+        return 0
+    fi
+
+    local target="" expected="-" bytes=0
+    if [ "$action" = "set" ]; then
+        local normalized=""
+        if ! normalized=$(gomemlimit_normalize "$container" "$requested"); then
+            normalized=""
+        fi
+        if [ -z "$normalized" ]; then
+            colorized_echo red "Not a valid size: $requested"
+            colorized_echo yellow "Give a byte count with an optional suffix: 512M, 1G, 800MiB, 1073741824"
+            exit 1
+        fi
+        target=$(awk '{print $1}' <<< "$normalized")
+        bytes=$(awk '{print $2}' <<< "$normalized")
+        expected="$target"
+
+        if [ "$bytes" -lt "$GOMEMLIMIT_MIN_BYTES" ] && [ "$force" != true ]; then
+            colorized_echo red "$target is below 64MiB — the Go collector would burn CPU instead of releasing memory."
+            colorized_echo yellow "Pass --force if that is really what you want."
+            exit 1
+        fi
+
+        local ram_bytes=0
+        if [ -r /proc/meminfo ]; then
+            ram_bytes=$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)
+        fi
+        if [ "${ram_bytes:-0}" -gt 0 ] && [ "$bytes" -gt "$ram_bytes" ]; then
+            colorized_echo yellow "Warning: $target is above the host RAM ($(( ram_bytes / 1048576 )) MiB) — this limit will never bite."
+        fi
+    fi
+
+    if [ "$configured" = "$target" ] && \
+        gomemlimit_matching_pids "$container" "$xray_path" "$expected" >/dev/null; then
+        if [ "$action" = "set" ]; then
+            colorized_echo green "Xray already runs with GOMEMLIMIT=$target — nothing to do."
+        else
+            colorized_echo green "Xray already runs without a memory limit — nothing to do."
+        fi
+        return 0
+    fi
+
+    GOMEMLIMIT_ENV_FILE="$env_file"
+    GOMEMLIMIT_BACKUP=$(mktemp)
+    GOMEMLIMIT_HAD_FILE=false
+    GOMEMLIMIT_CONTAINER="$container"
+    GOMEMLIMIT_XRAY_PATH="$xray_path"
+    GOMEMLIMIT_PREVIOUS="$configured"
+    GOMEMLIMIT_TIMEOUT=$(( health_interval * 3 + 30 ))
+
+    if [ -f "$env_file" ]; then
+        GOMEMLIMIT_HAD_FILE=true
+        cp "$env_file" "$GOMEMLIMIT_BACKUP"
+    fi
+
+    if [ "$action" = "set" ]; then
+        colorized_echo blue "Writing GOMEMLIMIT=$target to $env_file"
+        if ! gomemlimit_write "$env_file" "$target"; then
+            rm -f "$GOMEMLIMIT_BACKUP" "$env_file.tmp"
+            colorized_echo red "Could not write $env_file"
+            exit 1
+        fi
+    else
+        colorized_echo blue "Removing the memory limit from $env_file"
+        if ! rm -f "$env_file"; then
+            rm -f "$GOMEMLIMIT_BACKUP"
+            colorized_echo red "Could not remove $env_file"
+            exit 1
+        fi
+    fi
+
+    # a file the container cannot see would leave the panel restarting nothing
+    local seen
+    seen=$(docker exec "$container" cat "$env_file" 2>/dev/null || true)
+    if [ "$action" = "set" ] && [[ "$seen" != *"GOMEMLIMIT=$target"* ]]; then
+        gomemlimit_abort "The container does not see $env_file — $DATA_DIR is not shared with it. Check the volumes of the marzban service in $COMPOSE_FILE"
+    fi
+    if [ "$action" = "off" ] && [ -n "$seen" ]; then
+        gomemlimit_abort "$env_file still exists inside the container — $DATA_DIR is not shared with it. Check the volumes of the marzban service in $COMPOSE_FILE"
+    fi
+
+    if [ "$action" = "set" ]; then
+        colorized_echo blue "Waiting for the panel to restart Xray with GOMEMLIMIT=$target (up to ${GOMEMLIMIT_TIMEOUT}s)"
+    else
+        colorized_echo blue "Waiting for the panel to restart Xray without a memory limit (up to ${GOMEMLIMIT_TIMEOUT}s)"
+    fi
+
+    local pids=""
+    if ! pids=$(gomemlimit_wait "$container" "$xray_path" "$expected" "$GOMEMLIMIT_TIMEOUT"); then
+        gomemlimit_fail "Xray is still not running with the requested limit after ${GOMEMLIMIT_TIMEOUT}s."
+    fi
+
+    # a limit the runtime refuses shows up as a core that keeps being restarted,
+    # so the very same process has to still be there a few seconds later
+    sleep 6
+    local pids_after=""
+    if ! pids_after=$(gomemlimit_matching_pids "$container" "$xray_path" "$expected") \
+        || [ "$pids_after" != "$pids" ]; then
+        gomemlimit_fail "Xray did not stay up with the requested limit (it is being restarted in a loop)."
+    fi
+
+    rm -f "$GOMEMLIMIT_BACKUP"
+
+    if [ "$action" = "set" ]; then
+        colorized_echo green "Xray runs with GOMEMLIMIT=$target (pid $pids)"
+        colorized_echo green "Stored in $env_file — it survives container restarts and updates."
+    else
+        colorized_echo green "Xray runs without a memory limit (pid $pids)"
+    fi
+}
+
 case "$1" in
     up)
         shift; up_command "$@";;
@@ -3269,6 +3730,8 @@ case "$1" in
         shift; install_marzban_script "$@";;
     core-update)
         shift; update_core_command "$@";;
+    gomemlimit)
+        shift; gomemlimit_command "$@";;
     migrate)
         shift; migrate_marzban "$@";;
     tblocker)

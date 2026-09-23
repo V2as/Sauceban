@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from app import logger
 from app.xray.config import XRayConfig
+from app.xray.goenv import read_memory_limit
 from config import DEBUG
 
 
@@ -20,6 +21,8 @@ class XRayCore:
         self.version = self.get_version()
         self.process = None
         self.restarting = False
+        # GOMEMLIMIT the running process was started with, None when uncapped
+        self.memory_limit = None
 
         self._logs_buffer = deque(maxlen=100)
         self._temp_log_buffers = {}
@@ -116,18 +119,27 @@ class XRayCore:
             '-config',
             'stdin:'
         ]
+        env = dict(self._env)
+        memory_limit = read_memory_limit()
+        if memory_limit:
+            env["GOMEMLIMIT"] = memory_limit
+
         self.process = subprocess.Popen(
             cmd,
-            env=self._env,
+            env=env,
             stdin=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdout=subprocess.PIPE,
             universal_newlines=True
         )
+        self.memory_limit = memory_limit
         self.process.stdin.write(config.to_json())
         self.process.stdin.flush()
         self.process.stdin.close()
-        logger.warning(f"Xray core {self.version} started")
+        logger.warning(
+            f"Xray core {self.version} started"
+            + (f" with GOMEMLIMIT={memory_limit}" if memory_limit else "")
+        )
 
         self.__capture_process_logs()
 
@@ -141,6 +153,7 @@ class XRayCore:
 
         self.process.terminate()
         self.process = None
+        self.memory_limit = None
         logger.warning("Xray core stopped")
 
         # execute on stop functions

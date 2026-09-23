@@ -224,7 +224,9 @@ What is worth knowing before switching it on:
 
 ## Managing the blacklist via the API
 
-All endpoints require a **sudo admin** token.
+All endpoints require a **sudo admin** token. Building a client that drives
+this API from another project — schemas, error codes, reconcile rules — is
+[`BANDWIDTH_USAGE.md`](BANDWIDTH_USAGE.md).
 
 | Method | Path | Purpose |
 |---|---|---|

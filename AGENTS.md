@@ -48,6 +48,7 @@ python marzban-cli.py --help                   # CLI
 | Push-метрики (management API) | `USAGE-ADD-PUSH.md` |
 | Мониторинг аномалий трафика (детектор + push) | `USAGE-ANOMALY.md` |
 | Лимиты канала (`tc` на пользователя, `nft` на каждый адрес) | `USAGE-BLACKLIST.md` |
+| Лимиты канала (API для внешнего менеджера панелей) | `BANDWIDTH_USAGE.md` |
 | Команды `sauceme.sh` / `marzban` | `DOCS.md` |
 
 Меняете поведение модуля — обновите его `USAGE.md` (и при необходимости

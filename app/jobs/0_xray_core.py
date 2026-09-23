@@ -4,6 +4,7 @@ import traceback
 from app import app, logger, scheduler, xray
 from app.db import GetDB, crud
 from app.models.node import NodeStatus
+from app.xray.goenv import read_memory_limit
 from config import JOB_CORE_HEALTH_CHECK_INTERVAL
 from xray_api import exc as xray_exc
 
@@ -15,6 +16,14 @@ def core_health_check():
     if not xray.core.started:
         if not config:
             config = xray.config.include_db_users()
+        xray.core.restart(config)
+
+    # the Go runtime reads GOMEMLIMIT once, when the process starts, so a
+    # changed limit only reaches the core through a fresh process; restarting
+    # the core here is what keeps the panel itself out of the operation
+    elif xray.core.memory_limit != read_memory_limit():
+        logger.info("Xray memory limit changed, restarting the core")
+        config = xray.config.include_db_users()
         xray.core.restart(config)
 
     # nodes' core
