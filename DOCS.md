@@ -37,6 +37,7 @@ marzban <команда> [опции]
 - [fix-acme](#fix-acme) — Исправление volume acme.sh в docker-compose
 - [fix-xray-json](#fix-xray-json) — Лишние скобки в xray_config.json и перезапуск
 - [fix-limiter](#fix-limiter) — Выдать контейнеру NET_ADMIN для лимитов канала
+- [fix-setuptools](#fix-setuptools) — Убрать из лога предупреждение о pkg_resources
 - [edit](#edit) — Редактирование docker-compose.yml
 - [edit-env](#edit-env) — Редактирование .env
 - [install-script](#install-script) — Установка скрипта marzban
@@ -798,6 +799,48 @@ sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/
 4. Проверяет, что пересозданный контейнер действительно получил `NET_ADMIN`, и говорит об этом
 
 > **Когда нужна, если `up` и так всё делает:** проверка при старте появилась не сразу, и панель со старым `/usr/local/bin/marzban` её не выполняет. Второй случай — запись в compose уже есть, а контейнер создан раньше неё: тогда обычный `up -d` ничего не пересоздаёт, потому что конфиг не менялся, и панель продолжает жаловаться. Команду безопасно запускать повторно.
+
+---
+
+## fix-setuptools
+
+Убирает из лога панели предупреждение, которое печатается по два раза на каждый старт — один раз для `alembic upgrade head`, один для `python main.py`:
+
+```
+/usr/local/lib/python3.12/site-packages/apscheduler/__init__.py:1: UserWarning: pkg_resources
+is deprecated as an API. ... Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import get_distribution, DistributionNotFound
+```
+
+Это шум, а не сбой: APScheduler 3.9 узнаёт свою версию через `pkg_resources`, а setuptools этот API объявил устаревшим. Панель работает, ничего не падает.
+
+**Запуск:**
+
+```bash
+marzban fix-setuptools
+```
+
+Или разово с GitHub, без установленного скрипта:
+
+```bash
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/V2as/Sauceban/master/sauceme.sh)" @ fix-setuptools
+```
+
+| Опция | Описание |
+|---|---|
+| `--no-restart` | Только дописать `PYTHONWARNINGS` в `.env`, контейнер не трогать |
+
+**Что делает команда:**
+
+1. Спрашивает у панели версии `setuptools` и `APScheduler` и *проверяет импортом*, печатается ли предупреждение вообще
+2. Дописывает фильтр в `PYTHONWARNINGS` в `.env` — свои значения оператора в этой переменной сохраняются, она список через запятую
+3. Пересоздаёт только контейнер панели (база продолжает работать)
+4. Читает свежий лог и подтверждает, что предупреждения в нём больше нет
+5. Если образ уже несёт APScheduler, который не обращается к `pkg_resources`, — наоборот, **убирает** свой фильтр из `.env`
+
+> **Почему не «понизить setuptools»:** предупреждение есть во всех версиях setuptools, которые ещё содержат `pkg_resources` (как минимум с 67.x), а версии от 82 удалили его совсем — на них APScheduler 3.9 просто не импортируется. Поэтому в `requirements.txt` стоит пин `setuptools<82`, а настоящее исправление в образе — APScheduler 3.11, который читает версию через `importlib.metadata`.
+
+> **Зачем команда, если образ исправлен:** панель запускает готовый образ, и до его пересборки и `marzban update` единственное, что можно изменить с хоста, — окружение контейнера. Запись в `.env` переживает `restart`, `update` и смену образа. Команду безопасно запускать повторно.
 
 ---
 

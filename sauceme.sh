@@ -1960,6 +1960,7 @@ usage() {
     colorized_echo yellow "  fix-acme        $(tput sgr0)– Fix acme.sh volume in docker-compose (mount entire directory)"
     colorized_echo yellow "  fix-xray-json   $(tput sgr0)– Fix trailing extra braces in xray_config.json and restart"
     colorized_echo yellow "  fix-limiter     $(tput sgr0)– Grant NET_ADMIN so bandwidth limits reach the kernel"
+    colorized_echo yellow "  fix-setuptools  $(tput sgr0)– Remove the pkg_resources/setuptools warning from the panel log"
     colorized_echo yellow "  edit            $(tput sgr0)– Edit docker-compose.yml (via nano or vi editor)"
     colorized_echo yellow "  edit-env        $(tput sgr0)– Edit environment file (via nano or vi editor)"
     colorized_echo yellow "  help            $(tput sgr0)– Show this help message"
@@ -3132,6 +3133,246 @@ fix_limiter_command() {
     esac
 }
 
+# The line the panel prints twice on every start: APScheduler 3.9 reads its own
+# version through pkg_resources, and setuptools deprecated that API. Downgrading
+# setuptools is not a way out — every version that still ships pkg_resources
+# warns, and the ones that dropped it (>= 82) make APScheduler 3.9 fail to
+# import at all, which is what the `setuptools<82` pin in requirements.txt is for.
+PKG_RESOURCES_WARNING="pkg_resources is deprecated as an API"
+# Matched by message and not by module: a warning is filed under whichever frame
+# setuptools' warn() call points at, and that is an implementation detail.
+PKG_RESOURCES_FILTER="ignore:${PKG_RESOURCES_WARNING}:UserWarning"
+
+# Value of a key in $ENV_FILE. The last definition is the one docker compose
+# keeps, so that is the one reported.
+env_file_value() {
+    [ -f "$ENV_FILE" ] || return 0
+    sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*(.*)$/\1/p" "$ENV_FILE" | tail -1
+}
+
+# Writes a key to $ENV_FILE and drops every other definition of it: compose keeps
+# the last line, so an older one left behind would quietly win. An empty value
+# removes the key.
+env_file_set() {
+    local key="$1" value="$2" tmp
+    tmp=$(mktemp) || return 1
+
+    if [ -f "$ENV_FILE" ]; then
+        grep -vE "^[[:space:]]*$key[[:space:]]*=" "$ENV_FILE" > "$tmp" || true
+        if [ -s "$tmp" ] && [ -n "$(tail -c 1 "$tmp")" ]; then
+            printf '\n' >> "$tmp"
+        fi
+    fi
+    if [ -n "$value" ]; then
+        printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    fi
+
+    cat "$tmp" > "$ENV_FILE" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+}
+
+# Value of a key in the environment a container was created with. Read through
+# inspect rather than `docker exec`, because a panel stuck in a restart loop —
+# which is when its log gets read in the first place — cannot be exec'd into.
+container_env_value() {
+    [ -n "$1" ] || return 0
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null \
+        | sed -nE "s/^$2=//p" | tail -1
+}
+
+# PYTHONWARNINGS is a comma-separated list of filters and the operator may well
+# have their own entries in it; this command owns exactly one of them.
+warning_filters_without_ours() {
+    local out="" item
+
+    while IFS= read -r item; do
+        if [ -n "$item" ] && [ "$item" != "$PKG_RESOURCES_FILTER" ]; then
+            out="${out:+$out,}$item"
+        fi
+    done < <(printf '%s\n' "$1" | tr ',' '\n')
+
+    printf '%s' "$out"
+}
+
+# "<setuptools> <APScheduler> <yes|no>" — the versions for the operator, plus
+# whether the import still warns once the filters are off. Asked by actually
+# importing instead of comparing version numbers, so that an image which fixed
+# the warning some other way is recognized too. Empty output means the panel
+# could not be asked. One container start, because starting one costs seconds.
+panel_pkg_resources_probe() {
+    local container="$1" probe out="" status=1
+    probe='import importlib.metadata as meta
+import warnings
+
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    import apscheduler  # noqa: F401
+
+warned = any("deprecated as an API" in str(item.message) for item in caught)
+print(meta.version("setuptools"), meta.version("APScheduler"), "yes" if warned else "no")'
+
+    if [ -n "$container" ]; then
+        out=$(docker exec "$container" python3 -c "$probe" 2>/dev/null | tr -d '\r' | tail -1) && status=0 || status=1
+    fi
+    if [ "$status" -ne 0 ] || [ -z "$out" ]; then
+        out=$($COMPOSE -f "$COMPOSE_FILE" -p "$APP_NAME" run --rm --no-deps \
+            --entrypoint python3 marzban -c "$probe" 2>/dev/null | tr -d '\r' | tail -1) || true
+    fi
+
+    [[ "$out" == *" yes" || "$out" == *" no" ]] || out=""
+    printf '%s' "$out"
+}
+
+# Take the "pkg_resources is deprecated as an API" warning out of the panel log.
+# It is noise rather than a failure, and the dependency fix (an APScheduler that
+# does not import pkg_resources) ships inside the image — but a panel runs a
+# prebuilt image, so until that one is rebuilt and pulled the environment the
+# container starts with is the only thing the host can change.
+fix_setuptools_command() {
+    check_running_as_root
+
+    local no_restart=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-restart)
+                no_restart=true
+                shift
+            ;;
+            -h|--help)
+                colorized_echo cyan "Usage: marzban fix-setuptools [options]"
+                echo ""
+                echo "Removes the 'pkg_resources is deprecated as an API' warning from the"
+                echo "panel log. It is noise and not a failure: APScheduler reads its own"
+                echo "version through pkg_resources, which setuptools deprecated."
+                echo ""
+                echo "The filter is stored as PYTHONWARNINGS in $ENV_FILE, so it survives"
+                echo "restarts, updates and image pulls. Once the image carries an APScheduler"
+                echo "that no longer warns, the same command takes the filter back out."
+                echo ""
+                echo "OPTIONS:"
+                echo "  --no-restart   Only edit $ENV_FILE, do not recreate the container"
+                echo "  -h, --help     Show this help message"
+                echo ""
+                echo "EXAMPLES:"
+                echo "  marzban fix-setuptools"
+                echo "  marzban fix-setuptools --no-restart"
+                exit 0
+            ;;
+            *)
+                colorized_echo red "Unknown option: $1"
+                exit 1
+            ;;
+        esac
+    done
+
+    if ! is_marzban_installed; then
+        colorized_echo red "Marzban is not installed!"
+        exit 1
+    fi
+
+    if [ ! -f "$COMPOSE_FILE" ]; then
+        colorized_echo red "docker-compose.yml not found at $COMPOSE_FILE"
+        exit 1
+    fi
+
+    detect_compose
+
+    local container probe warns
+    container=$(panel_container)
+    probe=$(panel_pkg_resources_probe "$container")
+
+    if [ -n "$probe" ]; then
+        warns=$(awk '{print $3}' <<< "$probe")
+        colorized_echo cyan "Panel packages: setuptools $(awk '{print $1}' <<< "$probe"), APScheduler $(awk '{print $2}' <<< "$probe")"
+    else
+        warns="yes"
+        colorized_echo yellow "Could not ask the panel about its packages — assuming it still warns."
+    fi
+
+    local current others wanted changed=false
+    current=$(env_file_value PYTHONWARNINGS)
+    others=$(warning_filters_without_ours "$current")
+
+    if [ "$warns" = "yes" ]; then
+        wanted="${others:+$others,}$PKG_RESOURCES_FILTER"
+    else
+        # a filter kept for a warning that is gone only hides the next one
+        wanted="$others"
+    fi
+
+    if [ "$current" = "$wanted" ]; then
+        if [ "$warns" = "yes" ]; then
+            colorized_echo green "PYTHONWARNINGS in $ENV_FILE already filters the warning"
+        else
+            colorized_echo green "This APScheduler does not warn and no filter is set — nothing to do."
+        fi
+    else
+        if [ "$warns" = "yes" ]; then
+            colorized_echo blue "Writing the warning filter to $ENV_FILE"
+        else
+            colorized_echo blue "This APScheduler no longer warns — dropping the filter from $ENV_FILE"
+        fi
+        if ! env_file_set PYTHONWARNINGS "$wanted"; then
+            colorized_echo red "Could not write $ENV_FILE"
+            exit 1
+        fi
+        changed=true
+        colorized_echo green "$ENV_FILE updated"
+    fi
+
+    if [ "$no_restart" = true ]; then
+        colorized_echo yellow "Skipped restart (--no-restart). The change applies once the container is recreated."
+        return 0
+    fi
+
+    # the line in .env means nothing until the container carries it, and `up -d`
+    # does not recreate a container just because the env file behind it changed
+    if [ -n "$container" ] && [ "$(container_env_value "$container" PYTHONWARNINGS)" = "$wanted" ]; then
+        if [ "$changed" = true ]; then
+            colorized_echo green "The running container already starts with this PYTHONWARNINGS — nothing to recreate."
+        fi
+        return 0
+    fi
+
+    # only the panel container is recreated; the database keeps running
+    colorized_echo blue "Recreating the panel container to apply $ENV_FILE..."
+    $COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" up -d --force-recreate --no-deps marzban
+
+    # the log is what the operator complained about, so the log is what is checked
+    colorized_echo blue "Reading the fresh panel log (up to 90s)..."
+    local deadline=$((SECONDS + 90)) logs="" started=false
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        logs=$($COMPOSE -f $COMPOSE_FILE -p "$APP_NAME" logs --tail 200 marzban 2>&1 || true)
+        if [[ "$logs" == *"$PKG_RESOURCES_WARNING"* ]] \
+            || [[ "$logs" == *"alembic.runtime.migration"* ]] \
+            || [[ "$logs" == *"Started server process"* ]]; then
+            started=true
+            break
+        fi
+        sleep 3
+    done
+
+    if [[ "$logs" == *"$PKG_RESOURCES_WARNING"* ]]; then
+        colorized_echo red "The panel still logs the warning."
+        colorized_echo yellow "Check that the marzban service in $COMPOSE_FILE reads $ENV_FILE (env_file)."
+        exit 1
+    fi
+
+    if [ "$started" = true ]; then
+        colorized_echo green "The panel started and the warning is gone from its log."
+    else
+        colorized_echo yellow "The panel has not logged its startup yet — check it with: marzban logs"
+    fi
+
+    # a green line about the log is the wrong thing to leave an operator with
+    # when the panel itself is not up
+    local state
+    state=$(docker inspect -f '{{.State.Status}}' "$(panel_container)" 2>/dev/null || true)
+    if [ "$state" = "restarting" ] || [ "$state" = "exited" ]; then
+        colorized_echo yellow "Note: the panel container is '$state' — that is a different problem. Run: marzban logs"
+    fi
+}
+
 # Truncate xray_config.json after the first valid top-level JSON value if the file has
 # trailing junk (e.g. duplicate `}` → json "Extra data" / jq "Unmatched '}'").
 fix_xray_json_extra_braces_command() {
@@ -3253,7 +3494,7 @@ PY
 # 64MiB — below that the Go collector burns CPU instead of releasing memory
 GOMEMLIMIT_MIN_BYTES=67108864
 
-gomemlimit_container() {
+panel_container() {
     $COMPOSE -f "$COMPOSE_FILE" -p "$APP_NAME" ps -q marzban 2>/dev/null | head -1
 }
 
@@ -3529,7 +3770,7 @@ gomemlimit_command() {
     detect_compose
 
     local container
-    container=$(gomemlimit_container)
+    container=$(panel_container)
     if [ -z "$container" ]; then
         colorized_echo red "The marzban container is not running — start it with 'marzban up' first."
         exit 1
@@ -3748,6 +3989,8 @@ case "$1" in
         shift; fix_xray_json_extra_braces_command "$@";;
     fix-limiter)
         shift; fix_limiter_command "$@";;
+    fix-setuptools)
+        shift; fix_setuptools_command "$@";;
     edit)
         shift; edit_command "$@";;
     edit-env)
