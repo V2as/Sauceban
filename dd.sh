@@ -46,6 +46,13 @@ WILDCARD_BASE_DOMAIN=""
 # reboot land in the middle of a deploy.
 WITH_WARP=false
 SKIP_CRON=false
+# Панельная миграция переносит /root/.acme.sh с прежнего сервера, и сертификаты
+# там уже валидные. Обычный прогон это учитывает (cert_is_valid перед --issue),
+# но только как оптимизацию: стоит съехать раскладке каталогов — и скрипт молча
+# уйдёт выписывать заново, тратя недельный лимит Let's Encrypt на домен. С
+# --no-issue до CA дело не доходит вообще: нет валидного сертификата на диске —
+# падаем с понятной ошибкой, а не жжём лимит.
+NO_ISSUE=false
 LOG_FILE="/root/dd.log"
 # Basic-auth credentials for the self-steal site; generated when absent.
 HTPASSWD_FILE="/etc/nginx/.htpasswd"
@@ -106,6 +113,10 @@ Optional:
                              whole GTK/WebKit stack and panels do not use it)
   --skip-warp                Accepted and ignored — WARP is already off
   --skip-cron                Skip crontab setup
+  --no-issue                 Never ask a CA for a certificate: only verify the
+                             ones already in /root/.acme.sh and fail if they are
+                             missing or expiring. For migrations, where certs are
+                             copied from the old server and CA limits matter.
   -h, --help                 Show this help
 
 Examples:
@@ -122,8 +133,15 @@ Examples:
   dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
         --acme-email "your@email.com" \
         --cf-token "your_api_token" --cf-zone-id "your_zone_id" --wildcard
+
+  # Migration: certificates already copied to /root/.acme.sh, never touch the CA
+  dd.sh --dash-domain panel.example.com --ss-domain cover.example.com \
+        --acme-email "your@email.com" --skip-cron --no-issue
 USAGE
-    exit 0
+    # Вызов из-за плохих аргументов обязан быть ненулевым: иначе установщик,
+    # передавший флаг, которого эта версия скрипта не знает, получит exit 0 и
+    # сочтёт деплой удавшимся, хотя не сделано ровно ничего.
+    exit "${1:-0}"
 }
 
 # ─── Argument parsing ──────────────────────────────────────────────────────
@@ -146,17 +164,18 @@ parse_args() {
             --with-warp)      WITH_WARP=true;          shift   ;;
             --skip-warp)      WITH_WARP=false;         shift   ;;
             --skip-cron)      SKIP_CRON=true;          shift   ;;
+            --no-issue)       NO_ISSUE=true;           shift   ;;
             -h|--help)        usage ;;
             *)
                 log_error "Unknown argument: $1"
-                usage
+                usage 1
                 ;;
         esac
     done
 
     if [[ -z "$DASH_DOMAIN" || -z "$SELF_STEAL_DOMAIN" ]]; then
         log_error "--dash-domain and --ss-domain are required."
-        usage
+        usage 1
     fi
 
     if [[ -z "$ACME_EMAIL" ]]; then
@@ -164,7 +183,12 @@ parse_args() {
         exit 1
     fi
 
-    if [[ "$WILDCARD" == true ]]; then
+    # Cloudflare нужен только чтобы пройти DNS-01. С --no-issue мы к CA не идём,
+    # а --wildcard остаётся лишь указанием на раскладку каталогов acme.sh, поэтому
+    # требовать креды не за что.
+    if [[ "$WILDCARD" == true && "$NO_ISSUE" == true ]]; then
+        log_info "--no-issue: wildcard задаёт только пути к сертификатам, Cloudflare не нужен"
+    elif [[ "$WILDCARD" == true ]]; then
         if [[ -n "$CF_KEY" && -n "$CF_EMAIL" ]]; then
             CF_AUTH_MODE="global_key"
             log_info "Using Cloudflare Global API Key"
@@ -307,7 +331,10 @@ install_acme() {
         curl -fsSL https://get.acme.sh | sh -s email="$ACME_EMAIL"
     else
         log_info "acme.sh already installed, upgrading..."
-        "$ACME_HOME/acme.sh" --upgrade
+        # Апгрейд тянет тарболл с github, и под set -e любой сетевой сбой там
+        # ронял весь деплой — хотя уже установленный acme.sh полностью работает.
+        "$ACME_HOME/acme.sh" --upgrade \
+            || log_warn "acme.sh --upgrade не удался — продолжаем с установленной версией"
     fi
 
     local acme_conf="${ACME_HOME}/account.conf"
@@ -318,6 +345,15 @@ install_acme() {
     fi
 
     "$ACME_HOME/acme.sh" --set-default-ca --server letsencrypt
+
+    # Регистрация аккаунта — единственный сетевой вызов к CA на этом шаге. Если
+    # выписывать мы всё равно не собираемся, ходить туда не за чем: аккаунт уже
+    # приехал вместе с перенесённым /root/.acme.sh.
+    if [[ "$NO_ISSUE" == true ]]; then
+        log_info "--no-issue: регистрацию ACME-аккаунта пропускаем"
+        return 0
+    fi
+
     "$ACME_HOME/acme.sh" --register-account -m "$ACME_EMAIL" || true
     log_info "ACME account registered with email: ${ACME_EMAIL}"
 }
@@ -365,7 +401,9 @@ issue_certificates() {
     log_step "Issuing SSL certificates"
     mkdir -p "$CERT_DIR"
 
-    if [[ "$WILDCARD" == true ]]; then
+    if [[ "$NO_ISSUE" == true ]]; then
+        log_info "--no-issue: проверяем только то, что уже лежит в ${ACME_HOME}"
+    elif [[ "$WILDCARD" == true ]]; then
         issue_wildcard_cert || true
     else
         issue_standalone_certs || true
@@ -381,13 +419,22 @@ issue_certificates() {
     cert_is_valid "$ACME_SS_FC" || bad+=("self-steal ${SELF_STEAL_DOMAIN}: ${ACME_SS_FC}")
 
     if [[ ${#bad[@]} -gt 0 ]]; then
-        log_error "No valid certificate after issuance attempt:"
+        if [[ "$NO_ISSUE" == true ]]; then
+            log_error "--no-issue: на диске нет годного сертификата, а к CA мы не идём:"
+        else
+            log_error "No valid certificate after issuance attempt:"
+        fi
         local entry
         for entry in "${bad[@]}"; do
             log_error "  ${entry}"
         done
-        log_error "If rate-limited, wait until the retry time shown above."
-        log_error "Check acme.sh log: ${ACME_HOME}/acme.sh.log"
+        if [[ "$NO_ISSUE" == true ]]; then
+            log_error "Лимит CA не тронут. Проверьте, что ${ACME_HOME} перенесён целиком"
+            log_error "и что домены совпадают с именами каталогов *_ecc; либо снимите --no-issue."
+        else
+            log_error "If rate-limited, wait until the retry time shown above."
+            log_error "Check acme.sh log: ${ACME_HOME}/acme.sh.log"
+        fi
         exit 1
     fi
 
@@ -1205,6 +1252,7 @@ main() {
     log_info "Self-steal domain: ${SELF_STEAL_DOMAIN}"
     log_info "Wildcard mode    : ${WILDCARD}"
     log_info "WARP             : $(if $WITH_WARP; then echo 'install'; else echo 'skip'; fi)"
+    log_info "Certificates     : $(if $NO_ISSUE; then echo 'reuse only (--no-issue)'; else echo 'issue if missing'; fi)"
 
     install_base_packages
     install_acme
