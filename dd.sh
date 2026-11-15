@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DD_VERSION="2.7.1-20260907"
+DD_VERSION="2.8.0-20261115"
 
 # ============================================================================
 #  Marzban deploy helper — nginx + haproxy + acme.sh + sysctl tuning
@@ -936,11 +936,23 @@ EOF
 # ─── Sysctl tuning ─────────────────────────────────────────────────────────
 
 tune_sysctl() {
-    log_step "Applying sysctl tuning (BBR, disable IPv6)"
+    log_step "Applying sysctl tuning (BBR, disable IPv6, conntrack)"
 
     sysctl_set "net.ipv6.conf.all.disable_ipv6" "1"
     sysctl_set "net.core.default_qdisc" "fq"
     sysctl_set "net.ipv4.tcp_congestion_control" "bbr"
+
+    # The kernel sizes conntrack by RAM (65536 entries up to 4 GB) and keeps an
+    # established entry for 5 days. net.netfilter.* exists only while the module
+    # is loaded, so it is also loaded at boot: otherwise systemd-sysctl applies
+    # sysctl.conf before the keys appear and the limits are lost on reboot.
+    if modprobe nf_conntrack 2>/dev/null; then
+        echo nf_conntrack > /etc/modules-load.d/nf_conntrack.conf
+        sysctl_set "net.netfilter.nf_conntrack_max" "262144"
+        sysctl_set "net.netfilter.nf_conntrack_tcp_timeout_established" "7200"
+    else
+        log_warn "nf_conntrack module is unavailable — conntrack limits left as is"
+    fi
 
     sysctl -p
     log_info "sysctl applied"

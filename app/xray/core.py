@@ -128,7 +128,9 @@ class XRayCore:
             cmd,
             env=env,
             stdin=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # stderr has to be drained along with stdout: Go's net/http logs
+            # failed TLS handshakes there, and a full pipe leaks those connections
+            stderr=subprocess.STDOUT,
             stdout=subprocess.PIPE,
             universal_newlines=True
         )
